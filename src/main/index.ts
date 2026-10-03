@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, session, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, session, systemPreferences } from 'electron'
 
 const OUTPUT_WIDTH = 1280
 const OUTPUT_HEIGHT = 720
@@ -51,10 +51,8 @@ function createOutputWindow(): BrowserWindow {
   })
 
   win.once('ready-to-show', () => win.show())
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  // Nothing in Skillcam opens windows or links; never hand a URL to the OS.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
   win.webContents.on('console-message', ({ level, message }) => {
     console.log(`[output:${level}] ${message}`)

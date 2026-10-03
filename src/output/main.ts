@@ -2,6 +2,7 @@ import { openCamera } from './camera'
 import { createStage } from './render/stage'
 import { createHandTracker, type HandResult } from './perception/hands'
 import { startSpeech } from './perception/speech'
+import { onEachVideoFrame } from './perception/frameLoop'
 import { FpsMeter, RollingAverage } from './debug/fpsMeter'
 import { Hud } from './debug/hud'
 
@@ -31,14 +32,16 @@ async function main(): Promise<void> {
   console.log('[hands] GestureRecognizer ready (GPU, VIDEO, 2 hands)')
 
   // Run the recognizer once per new camera frame, not per render frame.
-  const onFrame = (now: number): void => {
-    const t0 = performance.now()
-    lastHands = tracker.recognizeForVideo(video, now)
-    handMs.push(performance.now() - t0)
-    handFps.tick(now)
-    video.requestVideoFrameCallback(onFrame)
-  }
-  video.requestVideoFrameCallback(onFrame)
+  onEachVideoFrame(
+    video,
+    (now) => {
+      const t0 = performance.now()
+      lastHands = tracker.recognizeForVideo(video, now)
+      handMs.push(performance.now() - t0)
+      handFps.tick(now)
+    },
+    (err) => console.error('[hands] recognize failed', err)
+  )
 
   app.ticker.add(() => {
     renderFps.tick(performance.now())
