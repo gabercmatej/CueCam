@@ -11,6 +11,8 @@ export default defineConfig({
     root: resolve('src'),
     // Model + wasm files are served from assets/ and copied verbatim into the build.
     publicDir: resolve('assets'),
+    // The tracker worker loads MediaPipe's ES-module wasm loader, so workers must be module workers.
+    worker: { format: 'es' },
     build: {
       rollupOptions: {
         input: { output: resolve('src/output/index.html') }

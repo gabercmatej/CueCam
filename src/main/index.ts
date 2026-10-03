@@ -1,12 +1,20 @@
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, ipcMain, net, protocol, session, systemPreferences } from 'electron'
+import { app, BrowserWindow, ipcMain, net, powerSaveBlocker, protocol, session, systemPreferences } from 'electron'
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
 import { ConfigState } from './configState'
 
 const OUTPUT_WIDTH = 1280
 const OUTPUT_HEIGHT = 720
+/** window.open name the Output page uses for the Control window (src/control/panel.ts). */
+const CONTROL_WINDOW_NAME = 'skillcam-control'
+
+// The Output must keep rendering at full rate while a call app covers it (OBS captures it
+// even when hidden). Chromium otherwise throttles occluded and background windows.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
 // Dev: the project root. Packaged paths for config + clips are a Phase 5 decision.
 const ROOT = app.getAppPath()
@@ -65,6 +73,26 @@ function serveClips(): void {
   })
 }
 
+const SECURE_PREFERENCES = {
+  contextIsolation: true,
+  sandbox: true,
+  nodeIntegration: false,
+  // Keep rendering at full rate when another app (the call) has focus.
+  backgroundThrottling: false
+} as const
+
+function hardenContents(contents: Electron.WebContents, name: string): void {
+  contents.on('will-navigate', (event) => event.preventDefault())
+  contents.on('console-message', ({ level, message }) => {
+    console.log(`[${name}:${level}] ${message}`)
+  })
+}
+
+/**
+ * The Output window: exactly 1280×720, frameless, canvas only. OBS captures it by its title.
+ * Its page drives the Control window too: it opens it with window.open (same origin, same
+ * renderer process), so one camera and one tracker serve both windows.
+ */
 function createOutputWindow(): BrowserWindow {
   const win = new BrowserWindow({
     title: 'Skillcam Output',
@@ -72,25 +100,46 @@ function createOutputWindow(): BrowserWindow {
     height: OUTPUT_HEIGHT,
     useContentSize: true,
     resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    frame: false,
+    // No shadow or rounded corners leaking into the capture.
+    hasShadow: false,
+    roundedCorners: false,
     backgroundColor: '#000000',
     show: false,
-    webPreferences: {
-      preload: join(import.meta.dirname, '../preload/index.cjs'),
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      // Keep rendering at full rate when another app (the call) has focus.
-      backgroundThrottling: false
-    }
+    webPreferences: { preload: join(import.meta.dirname, '../preload/index.cjs'), ...SECURE_PREFERENCES }
   })
 
   win.once('ready-to-show', () => win.show())
-  // Nothing in Skillcam opens windows or links; never hand a URL to the OS.
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  win.webContents.on('will-navigate', (event) => event.preventDefault())
-  win.webContents.on('console-message', ({ level, message }) => {
-    console.log(`[output:${level}] ${message}`)
+  // The page title must stay "Skillcam Output" for OBS's window list.
+  win.on('page-title-updated', (event) => event.preventDefault())
+  hardenContents(win.webContents, 'output')
+
+  // Only the Control window may be opened, and only as a blank same-origin page the Output fills in.
+  win.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    if (frameName !== CONTROL_WINDOW_NAME || url !== 'about:blank') return { action: 'deny' }
+    const [x, y] = win.getPosition()
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        title: 'Skillcam Control',
+        width: 664,
+        height: 640,
+        x: (x ?? 0) + 40,
+        y: (y ?? 0) + 40,
+        backgroundColor: '#111214',
+        webPreferences: { ...SECURE_PREFERENCES }
+      }
+    }
   })
+  win.webContents.on('did-create-window', (child) => {
+    child.on('page-title-updated', (event) => event.preventDefault())
+    child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    hardenContents(child.webContents, 'control')
+  })
+  // The Output is the engine; closing it ends the app (the Control window can't run alone).
+  win.on('closed', () => app.quit())
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (devUrl) void win.loadURL(`${devUrl}/output/index.html`)
@@ -120,6 +169,8 @@ void app.whenReady().then(async () => {
   })
 
   await requestMediaAccess()
+  // App Nap would throttle the whole app while the call app is in front.
+  powerSaveBlocker.start('prevent-app-suspension')
   createOutputWindow()
 
   app.on('activate', () => {

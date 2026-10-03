@@ -57,16 +57,26 @@ const Rule = z.object({
       gesture: z.enum(GESTURES).optional(),
       word: z.string().min(1).optional(),
       /** For combos (gesture + word): both must happen within this window, in either order. */
-      withinMs: z.number().int().positive().optional()
+      withinMs: z.number().int().positive().max(10_000).optional()
     })
     .refine((w) => w.gesture || w.word, 'a rule needs a gesture, a word, or both'),
   play: z.union([z.string(), z.array(z.string()).min(1)]).transform((p) => (Array.isArray(p) ? p : [p])),
   cooldownMs: z.number().int().nonnegative().optional()
 })
 
+const Performance = z.object({
+  /** Run hand tracking on every Nth camera frame (1 = every frame). Adaptive quality may raise it under load, never lower it. */
+  trackEvery: z.number().int().min(1).max(4).default(2),
+  /** Under load, track less often, lower particle counts and cap the render rate; recover when load falls. */
+  adaptive: z.boolean().default(true),
+  /** Hand-tracking backend. GPU shares the GPU with rendering and the call; CPU (XNNPACK) uses spare cores. Read at startup. */
+  trackerDelegate: z.enum(['GPU', 'CPU']).default('GPU')
+})
+
 export const ConfigSchema = z
   .object({
     hotkey: z.string().default('CommandOrControl+Shift+K'),
+    performance: Performance.prefault({}),
     defaultCooldownMs: z.number().int().nonnegative().default(2000),
     words: z.array(z.string().min(1)).min(1),
     rules: z.array(Rule),

@@ -40,6 +40,8 @@ function makeTextures(renderer: Renderer): Record<ParticleTexture, Texture> {
 export class ParticleEngine {
   private readonly pools = new Map<ParticleTexture, Pool>()
   private liveCount = 0
+  /** Adaptive quality: scales burst sizes and the live cap. */
+  private scale = 1
 
   constructor(
     layer: Container,
@@ -64,12 +66,16 @@ export class ParticleEngine {
     return this.liveCount
   }
 
+  setScale(scale: number): void {
+    this.scale = Math.min(1, Math.max(0.1, scale))
+  }
+
   play(cfg: ParticlesConfig, ctx: EffectContext): void {
     const preset = PRESETS[cfg.preset]
     const pool = this.pools.get(preset.texture)!
     const anchors = resolveAnchors(cfg.anchor, ctx, this.width, this.height, this.mirror)
     const mode = cfg.anchor === 'bottom-corners' ? 'cannon' : 'burst'
-    const budget = Math.min(cfg.count, MAX_PARTICLES - this.liveCount)
+    const budget = Math.min(Math.round(cfg.count * this.scale), Math.round(MAX_PARTICLES * this.scale) - this.liveCount)
     if (budget <= 0) return
     const perAnchor = Math.max(1, Math.floor(budget / anchors.length))
 
@@ -86,9 +92,12 @@ export class ParticleEngine {
 
   update(dt: number): void {
     for (const pool of this.pools.values()) {
-      if (pool.live.length === 0) continue
-      const alive: Pool['live'] = []
-      for (const entry of pool.live) {
+      const live = pool.live
+      if (live.length === 0) continue
+      // Compact survivors in place: no per-frame arrays.
+      let kept = 0
+      for (let i = 0; i < live.length; i++) {
+        const entry = live[i]!
         const { sim, sprite } = entry
         if (!stepParticle(sim, dt)) {
           pool.free.push(sprite)
@@ -103,11 +112,14 @@ export class ParticleEngine {
         sprite.scaleX = s
         sprite.scaleY = sim.flutter ? s * (0.25 + 0.75 * Math.abs(Math.sin(sim.age * 9 + sim.rotation))) : s
         sprite.alpha = particleAlpha(sim)
-        alive.push(entry)
+        live[kept++] = entry
       }
-      if (alive.length !== pool.live.length) {
-        pool.live = alive
-        pool.container.particleChildren = alive.map((e) => e.sprite)
+      if (kept !== live.length) {
+        live.length = kept
+        // particleChildren is a plain array we own; rebuild it in place, then flag the change.
+        const children = pool.container.particleChildren
+        children.length = kept
+        for (let i = 0; i < kept; i++) children[i] = live[i]!.sprite
         pool.container.update()
       }
     }

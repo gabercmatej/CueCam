@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["src/output/**/*", "src/shared/**/*", "src/env.d.ts"],
+  "include": ["src/output/**/*", "src/control/**/*", "src/shared/**/*", "src/env.d.ts"],
   "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": ["vite/client"], "outDir": "out/.tsc/web" }
 }

@@ -65,4 +65,16 @@ describe('parseConfig', () => {
     const r = parse({ ...valid, rules: [{ when: { word: 'fire', gesture: 'PalmPush' }, play: 'shake' }] })
     expect(r.ok && r.config.rules[0]!.when.withinMs).toBe(1500)
   })
+
+  it('defaults the performance section and validates it', () => {
+    const r = parse(valid)
+    expect(r.ok && r.config.performance).toEqual({ trackEvery: 2, adaptive: true, trackerDelegate: 'GPU' })
+    expect(parse({ ...valid, performance: { trackEvery: 1 } })).toMatchObject({ ok: true, config: { performance: { trackEvery: 1, adaptive: true, trackerDelegate: 'GPU' } } })
+    expect(parse({ ...valid, performance: { trackEvery: 9 } }).ok).toBe(false)
+  })
+
+  it('rejects combo windows over 10 s', () => {
+    const rules = [{ when: { word: 'fire', gesture: 'PalmPush', withinMs: 10_001 }, play: 'shake' }]
+    expect(parse({ ...valid, rules }).ok).toBe(false)
+  })
 })

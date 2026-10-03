@@ -3,7 +3,7 @@ import type { HandSide, Point } from '../shared/types'
 /**
  * How a window presents the camera. `mirror` is the single switch: it flips the camera
  * sprite and every landmark/effect coordinate together, so effects land on your hand.
- * Phase 2: the Output window uses mirror: false, the Control preview mirror: true.
+ * The Output (what the call sees) is not mirrored; the Control preview is (see control/panel.ts).
  */
 export interface View {
   mirror: boolean
@@ -11,7 +11,7 @@ export interface View {
   height: number
 }
 
-export const OUTPUT_VIEW: View = { mirror: true, width: 1280, height: 720 }
+export const OUTPUT_VIEW: View = { mirror: false, width: 1280, height: 720 }
 
 /** Normalized camera coordinates (0–1, raw camera orientation) → screen pixels for this view. */
 export function toScreen(view: View, p: { x: number; y: number }): Point {

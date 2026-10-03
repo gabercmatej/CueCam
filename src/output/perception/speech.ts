@@ -2,6 +2,7 @@ import { type KaldiRecognizer, Model } from 'vosk-browser'
 import micWorkletUrl from './micCapture.worklet.ts?worker&url'
 import type { MicCaptureOptions } from './micCapture.worklet'
 import { waitForModelLoad } from './modelLoad'
+import { SpeechGate } from './speechGate'
 import { AudioClock, buildGrammar, type VoskResult } from './speechParse'
 import { type SpottedWord, WordSpotter } from './wordSpotter'
 
@@ -27,6 +28,11 @@ interface Listener {
 /** Mic → AudioWorklet → Vosk keyword spotting. One model and mic; the grammar can be swapped live. */
 export class SpeechInput {
   private listener: Listener | null = null
+  /** Silence isn't sent to Vosk (see SpeechGate); chunks keep their capture time for the clock. */
+  private readonly gate = new SpeechGate<{ chunk: Float32Array; at: number }>()
+  /** Chunks sent to / skipped from Vosk since the last stats read. */
+  private fed = 0
+  private skipped = 0
 
   private constructor(
     private readonly model: Model,
@@ -100,13 +106,29 @@ export class SpeechInput {
     this.model.terminate()
   }
 
+  /** Share of mic chunks Vosk decoded since the last call (1 = no silence skipped). */
+  takeDecodeShare(): number {
+    const total = this.fed + this.skipped
+    const share = total ? this.fed / total : 1
+    this.fed = this.skipped = 0
+    return share
+  }
+
   private onChunk(chunk: Float32Array): void {
     let peak = 0
-    for (const v of chunk) peak = Math.max(peak, Math.abs(v))
+    for (let i = 0; i < chunk.length; i++) {
+      const v = Math.abs(chunk[i]!)
+      if (v > peak) peak = v
+    }
     this.events.onLevel(peak)
     if (!this.listener) return
-    this.listener.clock.push(chunk.length, performance.now())
-    this.listener.recognizer.acceptWaveformFloat(chunk, SAMPLE_RATE)
+    const ready = this.gate.push({ chunk, at: performance.now() }, peak)
+    if (ready.length === 0) this.skipped++
+    for (const { chunk: c, at } of ready) {
+      this.fed++
+      this.listener.clock.push(c.length, at)
+      this.listener.recognizer.acceptWaveformFloat(c, SAMPLE_RATE)
+    }
   }
 }
 

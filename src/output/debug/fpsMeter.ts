@@ -16,19 +16,26 @@ export class FpsMeter {
   }
 }
 
-/** Mean of the last `size` samples, e.g. per-stage timings in ms. */
+/** Mean of the last `size` samples, e.g. per-stage timings in ms. O(1) per sample, no allocations. */
 export class RollingAverage {
-  private samples: number[] = []
+  private readonly samples: Float64Array
+  private next = 0
+  private count = 0
+  private sum = 0
 
-  constructor(private readonly size = 30) {}
+  constructor(size = 30) {
+    this.samples = new Float64Array(size)
+  }
 
   push(value: number): void {
-    this.samples.push(value)
-    if (this.samples.length > this.size) this.samples.shift()
+    if (this.count === this.samples.length) this.sum -= this.samples[this.next]!
+    else this.count++
+    this.samples[this.next] = value
+    this.sum += value
+    this.next = (this.next + 1) % this.samples.length
   }
 
   get value(): number {
-    if (this.samples.length === 0) return 0
-    return this.samples.reduce((a, b) => a + b, 0) / this.samples.length
+    return this.count ? this.sum / this.count : 0
   }
 }

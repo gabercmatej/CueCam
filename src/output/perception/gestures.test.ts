@@ -45,11 +45,32 @@ describe('classifyHand', () => {
 })
 
 describe('Stabilizer', () => {
-  const run = (s: Stabilizer, frames: string[][]) => frames.map((f) => s.update(new Set(f)))
+  const FRAME = 1000 / 30
+  /** One sample per `stride` camera frames at 30 fps, starting at frame `from`. */
+  const run = (s: Stabilizer, frames: string[][], stride = 1, from = 0) =>
+    frames.map((f, i) => s.update(new Set(f), (from + i * stride) * FRAME))
 
   it('fires once after 5 consecutive frames', () => {
     const fired = run(new Stabilizer(), [['a'], ['a'], ['a'], ['a'], ['a'], ['a'], ['a']])
     expect(fired.map((f) => f.length)).toEqual([0, 0, 0, 0, 1, 0, 0])
+  })
+
+  it('needs at least 3 detections even when samples are far apart (stride 4 under load)', () => {
+    expect(run(new Stabilizer(), [['a'], ['a'], ['a']], 4).map((f) => f.length)).toEqual([0, 0, 1])
+  })
+
+  it('does not treat a gap in tracking as the gesture being held', () => {
+    const s = new Stabilizer()
+    s.update(new Set(['a']), 0)
+    s.update(new Set(['a']), 1000)
+    expect(s.update(new Set(['a']), 1033)).toEqual([])
+  })
+
+  it('takes the same time to fire when tracking runs every 2nd or 3rd frame', () => {
+    // 5 frames at 30 fps ≈ 133 ms: 3 samples at stride 2, 2 samples at stride 3 (0 → 100 → 200 ms).
+    expect(run(new Stabilizer(), [['a'], ['a'], ['a'], ['a']], 2).map((f) => f.length)).toEqual([0, 0, 1, 0])
+    expect(run(new Stabilizer(), [['a'], ['a'], ['a']], 3).map((f) => f.length)).toEqual([0, 0, 1])
+    // …and at stride 3 that is also the 3-detection minimum.
   })
 
   it('restarts the hold count if the gesture flickers out', () => {
@@ -60,14 +81,22 @@ describe('Stabilizer', () => {
   it('needs 10 frames of absence before it can fire again', () => {
     const s = new Stabilizer()
     run(s, Array.from({ length: 5 }, () => ['a']))
-    expect(run(s, [...Array.from({ length: 9 }, () => []), ...Array.from({ length: 5 }, () => ['a'])]).flat()).toEqual([])
-    run(s, Array.from({ length: 10 }, () => []))
-    expect(run(s, Array.from({ length: 5 }, () => ['a'])).flat()).toEqual(['a'])
+    expect(run(s, [...Array.from({ length: 9 }, () => []), ...Array.from({ length: 5 }, () => ['a'])], 1, 5).flat()).toEqual([])
+    run(s, Array.from({ length: 10 }, () => []), 1, 19)
+    expect(run(s, Array.from({ length: 5 }, () => ['a']), 1, 29).flat()).toEqual(['a'])
+  })
+
+  it('measures absence in time, not samples, at a tracking stride', () => {
+    const s = new Stabilizer()
+    run(s, [['a'], ['a'], ['a']], 2)
+    // 5 empty samples at stride 2 = 10 frames of absence.
+    run(s, Array.from({ length: 5 }, () => []), 2, 6)
+    expect(run(s, [['a'], ['a'], ['a']], 2, 16).flat()).toEqual(['a'])
   })
 
   it('supports a per-key hold', () => {
     const s = new Stabilizer(5, 10, (k) => (k.startsWith('PalmPush') ? 1 : 5))
-    expect(s.update(new Set(['PalmPush:Left']))).toEqual(['PalmPush:Left'])
+    expect(s.update(new Set(['PalmPush:Left']), 0)).toEqual(['PalmPush:Left'])
   })
 })
 

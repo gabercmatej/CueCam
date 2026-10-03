@@ -67,12 +67,24 @@ export function detectHeart(a: HandGeometry, b: HandGeometry): { x: number; y: n
   return { x: tips.reduce((n, p) => n + p.x, 0) / 4, y: tips.reduce((n, p) => n + p.y, 0) / 4 }
 }
 
+/** Camera frame interval the frame-count tunables are expressed in. */
+const FRAME_MS = 1000 / 30
+/** Timestamp jitter allowance when converting frame counts to time. */
+const JITTER_MS = FRAME_MS / 4
+/** Detections a hold needs at minimum, however far apart samples are (stride 4 under load). */
+const MIN_SAMPLES = 3
+/** A longer gap between samples (tracker stall) breaks a hold: nobody saw the gesture in between. */
+const MAX_GAP_MS = 250
+
 /**
- * Turns per-frame presence into one-shot firings: a key must be present for `hold`
- * consecutive frames to fire, then absent for `release` frames before it can fire again.
+ * Turns presence samples into one-shot firings: a key must be present for `hold` frames'
+ * worth of time to fire, then absent for `release` frames' worth before it can fire again.
+ * Counts are frames at 30 fps but measured in time, so a tracking stride (every 2nd or 3rd
+ * frame) doesn't change how long you have to hold a gesture. A hold also needs at least
+ * 3 detections, so a sparse stride can't fire on a single misclassification.
  */
 export class Stabilizer {
-  private state = new Map<string, { seen: number; absent: number; fired: boolean }>()
+  private state = new Map<string, { since: number | null; samples: number; lastSeen: number; fired: boolean }>()
   private readonly holdFor: (key: string) => number
 
   constructor(
@@ -83,23 +95,29 @@ export class Stabilizer {
     this.holdFor = holdFor ?? (() => hold)
   }
 
-  update(present: Set<string>): string[] {
+  update(present: Set<string>, at: number): string[] {
     const fired: string[] = []
     for (const key of present) {
-      const s = this.state.get(key) ?? { seen: 0, absent: 0, fired: false }
-      s.seen++
-      s.absent = 0
-      if (!s.fired && s.seen >= this.holdFor(key)) {
+      let s = this.state.get(key)
+      if (!s) this.state.set(key, (s = { since: null, samples: 0, lastSeen: at, fired: false }))
+      if (at - s.lastSeen > MAX_GAP_MS) s.since = null
+      if (s.since === null) {
+        s.since = at
+        s.samples = 0
+      }
+      s.samples++
+      s.lastSeen = at
+      const hold = this.holdFor(key)
+      const holdMs = (hold - 1) * FRAME_MS
+      if (!s.fired && at - s.since >= holdMs - JITTER_MS && s.samples >= Math.min(hold, MIN_SAMPLES)) {
         s.fired = true
         fired.push(key)
       }
-      this.state.set(key, s)
     }
     for (const [key, s] of this.state) {
       if (present.has(key)) continue
-      s.seen = 0
-      s.absent++
-      if (s.absent >= this.release) this.state.delete(key)
+      s.since = null
+      if (at - s.lastSeen >= this.release * FRAME_MS - JITTER_MS) this.state.delete(key)
     }
     return fired
   }
@@ -215,7 +233,7 @@ export class GestureTracker {
       if (heart) mark('Heart:Both', toScreen(this.view, heart))
     }
 
-    const events = this.stabilizer.update(present).map((key): GestureEvent => {
+    const events = this.stabilizer.update(present, at).map((key): GestureEvent => {
       const [gesture, hand] = key.split(':') as [GestureName, HandSide | 'Both']
       return { type: 'gesture', gesture, hand, position: where.get(key)!, at }
     })

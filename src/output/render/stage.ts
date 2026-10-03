@@ -3,8 +3,8 @@ import type { View } from '../view'
 
 /**
  * Render layers, bottom to top (BUILD_PLAN §3). Camera moves transform the whole scene.
- * In v1 "back" sits just above the opaque camera (under front FX): truly behind you needs
- * person segmentation (stretch goal), which will cut the camera layer over it.
+ * "back" sits just above the opaque camera (under front FX) until Phase 3's person cutout
+ * goes between back and front FX. The Output stage has no debug layer: UI lives in Control.
  */
 export interface Stage {
   app: Application
@@ -13,8 +13,6 @@ export interface Stage {
   back: Container
   front: Container
   overlay: Container
-  /** Debug drawings (Phase 0/1 only; moves to the Control window in Phase 2). */
-  debug: Container
 }
 
 export async function createStage(video: HTMLVideoElement, view: View): Promise<Stage> {
@@ -46,7 +44,6 @@ export async function createStage(video: HTMLVideoElement, view: View): Promise<
   const front = new Container()
   scene.addChild(camera, back, front)
   const overlay = new Container()
-  const debug = new Container()
-  app.stage.addChild(scene, overlay, debug)
-  return { app, scene, back, front, overlay, debug }
+  app.stage.addChild(scene, overlay)
+  return { app, scene, back, front, overlay }
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { GestureEvent, GestureName, WordEvent } from '../../shared/types'
 import type { RuleConfig } from '../../shared/config'
-import { TriggerEngine } from './triggers'
+import { RELEASE_MARGIN_MS, TriggerEngine } from './triggers'
 
 const g = (gesture: GestureName, at: number, x = 100): GestureEvent => ({ type: 'gesture', gesture, hand: 'Right', position: { x, y: 200 }, at })
 const w = (word: string, at: number): WordEvent => ({ type: 'word', word, confidence: 1, partial: true, at })
@@ -78,5 +78,104 @@ describe('TriggerEngine', () => {
     e.handle(w('boom', 0))
     e.setRules([rule({ word: 'boom' }, ['a'])], 2000)
     expect(e.handle(w('boom', 10))).toHaveLength(1)
+  })
+
+  describe('combos cancel solo rules', () => {
+    const rules = () => [
+      rule({ word: 'fire', gesture: 'PalmPush', withinMs: 1500 }, ['fireball']),
+      rule({ word: 'fire' }, ['flames']),
+      rule({ gesture: 'PalmPush' }, ['push'])
+    ]
+
+    it('holds a solo word rule while its combo could still complete, then cancels it when the combo fires', () => {
+      const e = engine(rules())
+      expect(e.handle(w('fire', 0))).toEqual([])
+      expect(e.tick(1000)).toEqual([])
+      // The gesture completes the combo: neither the held word solo nor the gesture solo fires.
+      expect(e.handle(g('PalmPush', 1200, 300))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 } }])
+      expect(e.tick(5000)).toEqual([])
+    })
+
+    it('releases the held solo word rule once the combo window passes', () => {
+      const e = engine(rules())
+      e.handle(w('fire', 0))
+      // Released after the window plus a margin for tracking latency (gesture events are stamped earlier than they arrive).
+      expect(e.tick(1500 + RELEASE_MARGIN_MS - 1)).toEqual([])
+      expect(e.tick(1500 + RELEASE_MARGIN_MS)).toEqual([{ rule: 1, effects: ['flames'] }])
+      expect(e.tick(3000)).toEqual([])
+    })
+
+    it('a late gesture after the release fires its own solo rule, not the combo', () => {
+      const e = engine(rules())
+      e.handle(w('fire', 0))
+      e.tick(1500 + RELEASE_MARGIN_MS)
+      expect(e.handle(g('PalmPush', 1700)).map((f) => f.rule)).toEqual([2])
+    })
+
+    it('gesture first: the gesture solo fires at once; the word then completes the combo and its solo is suppressed', () => {
+      const e = engine(rules())
+      expect(e.handle(g('PalmPush', 0, 300)).map((f) => f.rule)).toEqual([2])
+      expect(e.handle(w('fire', 800)).map((f) => f.rule)).toEqual([0])
+      expect(e.tick(5000)).toEqual([])
+    })
+
+    it('does not hold a solo word rule while the combo is cooling down', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'PalmPush', withinMs: 1500 }, ['fireball'], 10_000), rule({ word: 'fire' }, ['flames'], 0)])
+      e.handle(w('fire', 0))
+      e.handle(g('PalmPush', 100))
+      expect(e.handle(w('fire', 2000))).toEqual([{ rule: 1, effects: ['flames'] }])
+    })
+
+    it('does not hold words that belong to no combo', () => {
+      const e = engine([...rules(), rule({ word: 'boom' }, ['clip'])])
+      expect(e.handle(w('boom', 0))).toEqual([{ rule: 3, effects: ['clip'] }])
+    })
+
+    it('holds for the longest window among the combos that share the word', () => {
+      const e = engine([
+        rule({ word: 'fire', gesture: 'PalmPush', withinMs: 1000 }, ['a']),
+        rule({ word: 'fire', gesture: 'Fist', withinMs: 2000 }, ['b']),
+        rule({ word: 'fire' }, ['solo'])
+      ])
+      e.handle(w('fire', 0))
+      expect(e.tick(1500 + RELEASE_MARGIN_MS)).toEqual([])
+      expect(e.tick(2000 + RELEASE_MARGIN_MS)).toEqual([{ rule: 2, effects: ['solo'] }])
+    })
+
+    it('drops held solo rules on disarm and on a config change', () => {
+      const a = engine(rules())
+      a.handle(w('fire', 0))
+      a.armed = false
+      expect(a.tick(2000)).toEqual([])
+
+      const b = engine(rules())
+      b.handle(w('fire', 0))
+      b.setRules(rules(), 2000)
+      expect(b.tick(2000)).toEqual([])
+    })
+  
+    it('a repeated combo word is cancelled completely when the combo fires', () => {
+      const e = engine(rules())
+      e.handle(w('fire', 0))
+      e.handle(w('fire', 400))
+      expect(e.handle(g('PalmPush', 600)).map((f) => f.rule)).toEqual([0])
+      expect(e.tick(5000)).toEqual([])
+    })
+
+    it('a word whose solo rule already fired cannot complete a combo afterwards', () => {
+      const e = engine(rules())
+      e.handle(w('fire', 0))
+      expect(e.tick(1500 + RELEASE_MARGIN_MS).map((f) => f.rule)).toEqual([1])
+      // A late-arriving gesture stamped inside the window fires its own solo, not the combo too.
+      expect(e.handle(g('PalmPush', 1480)).map((f) => f.rule)).toEqual([2])
+    })
+
+    it('a word that fired its solo at once (combo cooling down) cannot complete the combo later', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'PalmPush', withinMs: 1500 }, ['fireball'], 1000), rule({ word: 'fire' }, ['flames'], 0)])
+      e.handle(w('fire', 0))
+      e.handle(g('PalmPush', 100))
+      expect(e.handle(w('fire', 900)).map((f) => f.rule)).toEqual([1])
+      expect(e.handle(g('PalmPush', 1200)).map((f) => f.rule)).toEqual([])
+    })
   })
 })

@@ -1,6 +1,7 @@
 {
   "hotkey": "CommandOrControl+Shift+K",
   "defaultCooldownMs": 2000,
+  "performance": { "trackEvery": 2, "adaptive": true, "trackerDelegate": "GPU" },
   "words": ["fire", "boom", "let's go", "no way", "bye"],
   "rules": [
     { "when": { "gesture": "ThumbUp" }, "play": "confetti_hand" },
