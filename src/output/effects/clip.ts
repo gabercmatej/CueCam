@@ -12,6 +12,8 @@ interface LoadedClip {
   video: HTMLVideoElement
   texture: Texture
   state: 'loading' | 'ready' | 'missing'
+  /** A trigger that arrived while loading; played once the clip is ready. */
+  pending?: () => void
 }
 
 /**
@@ -26,6 +28,7 @@ export class ClipEngine {
     private readonly layers: { back: Container; front: Container },
     private readonly width: number,
     private readonly height: number,
+    private readonly mirror: boolean,
     /** Called instead of playing when a clip file is missing or unplayable. */
     private readonly onMissing: (cfg: ClipConfig, ctx: EffectContext) => void
   ) {}
@@ -45,7 +48,15 @@ export class ClipEngine {
         texture: new Texture({ source: new VideoSource({ resource: video, autoPlay: false, updateFPS: 0 }) }),
         state: 'loading'
       }
-      video.addEventListener('canplaythrough', () => (clip.state = 'ready'), { once: true })
+      video.addEventListener(
+        'canplaythrough',
+        () => {
+          clip.state = 'ready'
+          clip.pending?.()
+          clip.pending = undefined
+        },
+        { once: true }
+      )
       video.addEventListener('error', () => {
         clip.state = 'missing'
         console.warn(`[clip] cannot load effects/clips/${file} (${video.error?.message ?? 'not found'})`)
@@ -61,12 +72,17 @@ export class ClipEngine {
       this.onMissing(cfg, ctx)
       return
     }
+    if (clip.state === 'loading') {
+      // Size isn't known until metadata loads (the texture is 1×1), so play when ready.
+      clip.pending = () => this.play(cfg, ctx)
+      return
+    }
     this.stop(clip)
     while (this.playing.length >= MAX_PLAYING) this.stop(this.playing[0]!.clip)
 
     const sprite = new Sprite(clip.texture)
-    const [at] = resolveAnchors(cfg.anchor, ctx, this.width, this.height)
-    const align = clipAlignment(cfg.anchor)
+    const [at] = resolveAnchors(cfg.anchor, ctx, this.width, this.height, this.mirror)
+    const align = clipAlignment(cfg.anchor, this.mirror)
     const aspect = clip.video.videoWidth && clip.video.videoHeight ? clip.video.videoWidth / clip.video.videoHeight : 1
     sprite.height = cfg.scale * this.height
     sprite.width = sprite.height * aspect

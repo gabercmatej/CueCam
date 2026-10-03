@@ -96,7 +96,8 @@ export type Config = z.output<typeof ConfigSchema>
 export type EffectConfig = Config['effects'][string]
 export type RuleConfig = Config['rules'][number]
 
-export type ConfigResult = { ok: true; config: Config } | { ok: false; error: string }
+/** `error` on an ok result: the file on disk is invalid and this is the last good config. */
+export type ConfigResult = { ok: true; config: Config; error?: string } | { ok: false; error: string }
 
 export function parseConfig(text: string): ConfigResult {
   let json: unknown

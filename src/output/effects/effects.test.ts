@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveAnchors } from './anchors'
+import { clipAlignment, resolveAnchors } from './anchors'
 import { cameraTransform, type ActiveMove } from './cameraMove'
 import { spawnBurst, stepParticle, PRESETS } from './particleSim'
 
@@ -65,5 +65,23 @@ describe('particle sim', () => {
     expect(stepParticle(p!, 0.1)).toBe(true)
     expect(p!.vy).toBeGreaterThan(vy0)
     expect(stepParticle(p!, 100)).toBe(false)
+  })
+})
+
+describe('resolveAnchors with a mirrored view (review fix: one mirror flag)', () => {
+  // Screen-fixed anchors are defined in Output space (what the call sees); a mirrored view flips them.
+  it('flips one-sided anchors and their direction', () => {
+    const [p] = resolveAnchors('bottom-left', { hands: [] }, W, H, true)
+    expect(p).toMatchObject({ x: W, y: H })
+    expect(Math.cos(p!.angle)).toBeLessThan(0)
+  })
+
+  it('leaves hand anchors alone (they are already in screen space)', () => {
+    expect(resolveAnchors('hand', { position: { x: 900, y: 300 }, hands: [] }, W, H, true)[0]).toMatchObject({ x: 900, y: 300 })
+  })
+
+  it('flips clip alignment', () => {
+    expect(clipAlignment('bottom-left', true)).toEqual({ x: 1, y: 1 })
+    expect(clipAlignment('bottom-left', false)).toEqual({ x: 0, y: 1 })
   })
 })

@@ -28,9 +28,9 @@ async function main(): Promise<void> {
   const hud = new Hud(stage.debug)
 
   // Effects
-  const particles = new ParticleEngine(stage.front, stage.app.renderer, view.width, view.height)
+  const particles = new ParticleEngine(stage.front, stage.app.renderer, view.width, view.height, view.mirror)
   const camera = new CameraMoves(stage.scene, view.width, view.height)
-  const clips = new ClipEngine({ back: stage.back, front: stage.front }, view.width, view.height, (cfg, ctx) => {
+  const clips = new ClipEngine({ back: stage.back, front: stage.front }, view.width, view.height, view.mirror, (cfg, ctx) => {
     // Missing clip file: a spark burst at the same spot so the trigger still reads.
     particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
   })
@@ -71,11 +71,15 @@ async function main(): Promise<void> {
       console.error(`[config] ${result.error}`)
       return
     }
-    config = result.config
-    triggers.setRules(config.rules, config.defaultCooldownMs)
-    registry.setEffects(config.effects)
-    speech?.setWords(config.words)
-    configStatus = `ok · ${config.rules.length} rules · ${Object.keys(config.effects).length} effects`
+    if (result.config !== config) {
+      config = result.config
+      triggers.setRules(config.rules, config.defaultCooldownMs)
+      registry.setEffects(config.effects)
+      speech?.setWords(config.words)
+    }
+    configStatus = result.error
+      ? `ERROR (keeping last good): ${result.error.split('\n').slice(0, 2).join(' ')}`
+      : `ok · ${config.rules.length} rules · ${Object.keys(config.effects).length} effects`
   }
   window.skillcam.onConfig(applyConfig)
   applyConfig(await window.skillcam.getConfig())

@@ -10,8 +10,15 @@ export interface AnchorPoint {
 
 const UP = -Math.PI / 2
 
-/** Where an effect appears for a given anchor. Hand anchors fall back to visible hands, then the center. */
-export function resolveAnchors(anchor: Anchor, ctx: EffectContext, w: number, h: number): AnchorPoint[] {
+/**
+ * Where an effect appears for a given anchor. Hand anchors are already in screen space and
+ * fall back to visible hands, then the center. Screen-fixed anchors ("bottom-left", …) are
+ * defined in Output space, what the call sees; a mirrored view flips them.
+ */
+export function resolveAnchors(anchor: Anchor, ctx: EffectContext, w: number, h: number, mirror = false): AnchorPoint[] {
+  if (mirror && anchor !== 'hand' && anchor !== 'between-hands') {
+    return resolveAnchors(anchor, ctx, w, h).map((p) => ({ x: w - p.x, y: p.y, angle: Math.PI - p.angle }))
+  }
   const center = { x: w / 2, y: h / 2 }
   const hand = ctx.position ?? ctx.hands[0] ?? center
   switch (anchor) {
@@ -43,7 +50,11 @@ export function resolveAnchors(anchor: Anchor, ctx: EffectContext, w: number, h:
 }
 
 /** Which point of a clip sits on its anchor (e.g. bottom-left clips hug the bottom-left corner). */
-export function clipAlignment(anchor: Anchor): { x: number; y: number } {
+export function clipAlignment(anchor: Anchor, mirror = false): { x: number; y: number } {
+  if (mirror) {
+    const a = clipAlignment(anchor)
+    return { x: 1 - a.x, y: a.y }
+  }
   switch (anchor) {
     case 'top-left':
       return { x: 0, y: 0 }

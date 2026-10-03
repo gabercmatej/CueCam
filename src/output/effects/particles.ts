@@ -45,7 +45,8 @@ export class ParticleEngine {
     layer: Container,
     renderer: Renderer,
     private readonly width: number,
-    private readonly height: number
+    private readonly height: number,
+    private readonly mirror: boolean
   ) {
     const textures = makeTextures(renderer)
     for (const kind of ['rect', 'heart', 'dot'] as const) {
@@ -66,7 +67,7 @@ export class ParticleEngine {
   play(cfg: ParticlesConfig, ctx: EffectContext): void {
     const preset = PRESETS[cfg.preset]
     const pool = this.pools.get(preset.texture)!
-    const anchors = resolveAnchors(cfg.anchor, ctx, this.width, this.height)
+    const anchors = resolveAnchors(cfg.anchor, ctx, this.width, this.height, this.mirror)
     const mode = cfg.anchor === 'bottom-corners' ? 'cannon' : 'burst'
     const budget = Math.min(cfg.count, MAX_PARTICLES - this.liveCount)
     if (budget <= 0) return

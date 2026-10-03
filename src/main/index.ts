@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, ipcMain, net, protocol, session, systemPreferences } from 'electron'
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
+import { ConfigState } from './configState'
 
 const OUTPUT_WIDTH = 1280
 const OUTPUT_HEIGHT = 720
@@ -107,13 +108,15 @@ void app.whenReady().then(async () => {
   lockDownSession()
   serveClips()
 
-  let config = loadConfig(CONFIG_FILE)
-  logConfig(config)
-  ipcMain.handle('config:get', () => config)
+  const config = new ConfigState()
+  const initial = loadConfig(CONFIG_FILE)
+  config.update(initial)
+  logConfig(initial)
+  ipcMain.handle('config:get', () => config.current)
   watchConfig(CONFIG_FILE, (result) => {
-    config = result
+    config.update(result)
     logConfig(result)
-    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('config:changed', result)
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('config:changed', config.current)
   })
 
   await requestMediaAccess()

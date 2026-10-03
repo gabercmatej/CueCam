@@ -151,6 +151,21 @@ export interface HandState {
   landmarks: Point[]
 }
 
+/**
+ * MediaPipe sometimes labels both hands the same side. Per-side state (pinch latch, push
+ * history, stabilizer keys) would then mix the two hands, so split them by position: in the
+ * raw (unmirrored) frame your right hand is the one further left.
+ */
+export function assignSides(hands: RawHand[]): RawHand[] {
+  const [a, b] = hands
+  if (hands.length !== 2 || !a || !b || a.side !== b.side) return hands
+  const aIsRight = a.landmarks[0]!.x < b.landmarks[0]!.x
+  return [
+    { ...a, side: aIsRight ? 'Right' : 'Left' },
+    { ...b, side: aIsRight ? 'Left' : 'Right' }
+  ]
+}
+
 export class GestureTracker {
   private readonly stabilizer = new Stabilizer(GESTURE_TUNING.holdFrames, GESTURE_TUNING.releaseFrames, (key) =>
     key.startsWith('PalmPush') ? 1 : GESTURE_TUNING.holdFrames
@@ -163,7 +178,8 @@ export class GestureTracker {
     this.aspect = view.width / view.height
   }
 
-  update(raw: RawHand[], at: number): { hands: HandState[]; events: GestureEvent[] } {
+  update(input: RawHand[], at: number): { hands: HandState[]; events: GestureEvent[] } {
+    const raw = assignSides(input)
     const present = new Set<string>()
     const where = new Map<string, Point>()
     const mark = (key: string, p: Point): void => {

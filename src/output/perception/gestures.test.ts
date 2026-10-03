@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { makeHand, POSES } from './__fixtures__/hands'
 import { analyzeHand, type Landmark } from './handGeometry'
-import { classifyHand, detectHeart, GestureTracker, PalmPushDetector, PinchLatch, Stabilizer, type RawHand } from './gestures'
+import { assignSides, classifyHand, detectHeart, GestureTracker, PalmPushDetector, PinchLatch, Stabilizer, type RawHand } from './gestures'
 import type { View } from '../view'
 
 const ASPECT = 16 / 9
@@ -155,5 +155,25 @@ describe('GestureTracker', () => {
     const { hands } = t.update([hand(makeHand(POSES.rock), 'Left')], 0)
     expect(hands[0]).toMatchObject({ side: 'Left', label: 'Rock', pinching: false })
     expect(hands[0]!.landmarks).toHaveLength(21)
+  })
+})
+
+describe('assignSides (review fix: duplicate handedness labels)', () => {
+  const hand = (wristX: number, side: 'Left' | 'Right'): RawHand => ({ landmarks: makeHand(POSES.openPalm, { wrist: { x: wristX, y: 0.7 } }), side, builtin: null })
+
+  it('keeps distinct labels as they are', () => {
+    expect(assignSides([hand(0.2, 'Left'), hand(0.8, 'Right')]).map((h) => h.side)).toEqual(['Left', 'Right'])
+  })
+
+  it('splits two same-labelled hands by position in the raw frame (your right hand is on the raw left)', () => {
+    expect(assignSides([hand(0.8, 'Left'), hand(0.2, 'Left')]).map((h) => h.side)).toEqual(['Left', 'Right'])
+    expect(assignSides([hand(0.2, 'Right'), hand(0.8, 'Right')]).map((h) => h.side)).toEqual(['Right', 'Left'])
+  })
+
+  it('stops two open palms of different sizes from faking a PalmPush', () => {
+    const t = new GestureTracker({ mirror: true, width: 1280, height: 720 })
+    const small = { landmarks: makeHand(POSES.openPalm, { wrist: { x: 0.2, y: 0.7 }, size: 0.2 }), side: 'Left' as const, builtin: { name: 'Open_Palm', score: 0.9 } }
+    const big = { landmarks: makeHand(POSES.openPalm, { wrist: { x: 0.8, y: 0.7 }, size: 0.26 }), side: 'Left' as const, builtin: { name: 'Open_Palm', score: 0.9 } }
+    expect(t.update([small, big], 0).events.filter((e) => e.gesture === 'PalmPush')).toEqual([])
   })
 })
