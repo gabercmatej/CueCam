@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+release/
+.DS_Store
+*.log
+.superpowers/
+# Downloaded model files (fetched by scripts/fetch-assets.sh)
+assets/mediapipe/
+assets/vosk/
