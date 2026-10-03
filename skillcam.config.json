@@ -1,0 +1,18 @@
+{
+  "hotkey": "CommandOrControl+Shift+K",
+  "defaultCooldownMs": 2000,
+  "words": ["fire", "boom", "let's go", "no way", "bye"],
+  "rules": [
+    { "when": { "gesture": "ThumbUp" }, "play": "confetti_hand" },
+    { "when": { "word": "boom" }, "play": ["explosion_clip", "shake"], "cooldownMs": 4000 },
+    { "when": { "word": "let's go" }, "play": "confetti_cannons", "cooldownMs": 3000 },
+    { "when": { "gesture": "Heart" }, "play": "hearts_between_hands" }
+  ],
+  "effects": {
+    "confetti_hand": { "type": "particles", "preset": "confetti", "anchor": "hand", "count": 120 },
+    "explosion_clip": { "type": "clip", "file": "explosion.webm", "layer": "back", "anchor": "bottom-left", "scale": 0.8 },
+    "shake": { "type": "cameraMove", "kind": "shake", "intensity": 0.8, "durationMs": 600 },
+    "confetti_cannons": { "type": "particles", "preset": "confetti", "anchor": "bottom-corners", "count": 260 },
+    "hearts_between_hands": { "type": "particles", "preset": "hearts", "anchor": "between-hands", "count": 60 }
+  }
+}

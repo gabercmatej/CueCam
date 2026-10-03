@@ -1,4 +1,13 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
+import type { SkillcamApi } from '../shared/api'
+import type { ConfigResult } from '../shared/config'
 
-// Phase 0: nothing to expose yet beyond a marker. IPC lands with the Control window (Phase 2).
-contextBridge.exposeInMainWorld('skillcam', { platform: process.platform })
+const api: SkillcamApi = {
+  platform: process.platform,
+  getConfig: (): Promise<ConfigResult> => ipcRenderer.invoke('config:get'),
+  onConfig: (callback: (result: ConfigResult) => void): void => {
+    ipcRenderer.on('config:changed', (_event, result: ConfigResult) => callback(result))
+  }
+}
+
+contextBridge.exposeInMainWorld('skillcam', api)

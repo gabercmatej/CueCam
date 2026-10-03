@@ -16,7 +16,8 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
     "pixi.js": "^8.22.0",
-    "vosk-browser": "^0.0.8"
+    "vosk-browser": "^0.0.8",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

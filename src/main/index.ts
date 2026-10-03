@@ -1,8 +1,21 @@
-import { join } from 'node:path'
-import { app, BrowserWindow, session, systemPreferences } from 'electron'
+import { join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { app, BrowserWindow, ipcMain, net, protocol, session, systemPreferences } from 'electron'
+import type { ConfigResult } from '../shared/config'
+import { loadConfig, watchConfig } from './config'
 
 const OUTPUT_WIDTH = 1280
 const OUTPUT_HEIGHT = 720
+
+// Dev: the project root. Packaged paths for config + clips are a Phase 5 decision.
+const ROOT = app.getAppPath()
+const CONFIG_FILE = join(ROOT, 'skillcam.config.json')
+const CLIPS_DIR = join(ROOT, 'effects', 'clips')
+
+// skillcam://clips/<file> serves effects/clips/ to the renderer in dev and packaged builds alike.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'skillcam', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }
+])
 
 async function requestMediaAccess(): Promise<void> {
   if (process.platform !== 'darwin') return
@@ -23,11 +36,31 @@ function lockDownSession(): void {
   // No network, ever (BUILD_PLAN §13). Backs up the CSP; MediaPipe tries to phone home for telemetry.
   // In dev, the Vite server on localhost is the only allowed origin.
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
-    const { protocol, hostname } = new URL(details.url)
-    const local = ['file:', 'data:', 'blob:', 'devtools:', 'mediastream:'].includes(protocol)
+    const { protocol: scheme, hostname } = new URL(details.url)
+    const local = ['file:', 'data:', 'blob:', 'devtools:', 'mediastream:', 'skillcam:'].includes(scheme)
     const devServer = !app.isPackaged && (hostname === 'localhost' || hostname === '127.0.0.1')
     if (!local && !devServer) console.warn(`[network] blocked ${details.method} ${details.url}`)
     callback({ cancel: !local && !devServer })
+  })
+}
+
+function serveClips(): void {
+  protocol.handle('skillcam', async (request) => {
+    const url = new URL(request.url)
+    const name = decodeURIComponent(url.pathname.slice(1))
+    const file = resolve(CLIPS_DIR, name)
+    if (url.hostname !== 'clips' || !/^\w[\w.-]*$/.test(name) || !file.startsWith(CLIPS_DIR + sep)) {
+      return new Response('Not found', { status: 404 })
+    }
+    try {
+      const res = await net.fetch(pathToFileURL(file).toString(), { headers: request.headers })
+      // Clips are drawn into WebGL, which refuses cross-origin video unless CORS allows it.
+      const headers = new Headers(res.headers)
+      headers.set('Access-Control-Allow-Origin', '*')
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+    } catch {
+      return new Response('Not found', { status: 404 })
+    }
   })
 }
 
@@ -65,8 +98,24 @@ function createOutputWindow(): BrowserWindow {
   return win
 }
 
+function logConfig(result: ConfigResult): void {
+  if (result.ok) console.log(`[config] loaded: ${result.config.rules.length} rules, ${Object.keys(result.config.effects).length} effects`)
+  else console.error(`[config] invalid, keeping the last good config:\n${result.error}`)
+}
+
 void app.whenReady().then(async () => {
   lockDownSession()
+  serveClips()
+
+  let config = loadConfig(CONFIG_FILE)
+  logConfig(config)
+  ipcMain.handle('config:get', () => config)
+  watchConfig(CONFIG_FILE, (result) => {
+    config = result
+    logConfig(result)
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('config:changed', result)
+  })
+
   await requestMediaAccess()
   createOutputWindow()
 

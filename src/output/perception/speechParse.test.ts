@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AudioClock, buildGrammar, matchWords, partialContains } from './speechParse'
+import { AudioClock, buildGrammar, matchWords } from './speechParse'
 
 describe('buildGrammar', () => {
   it('lowercases, dedupes, and appends [unk]', () => {
@@ -75,13 +75,5 @@ describe('matchWords', () => {
 
   it('handles results without word timings', () => {
     expect(matchWords({ text: '' }, ['boom'], clock, 0)).toEqual([])
-  })
-})
-
-describe('partialContains', () => {
-  it('finds whole words and phrases, not substrings', () => {
-    expect(partialContains('uh boom', 'boom')).toBe(true)
-    expect(partialContains("[unk] let's go", "let's go")).toBe(true)
-    expect(partialContains('booming', 'boom')).toBe(false)
   })
 })

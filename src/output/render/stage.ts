@@ -1,17 +1,27 @@
 import { Application, Container, Sprite, Texture, VideoSource } from 'pixi.js'
-import { FRAME_HEIGHT, FRAME_WIDTH } from '../camera'
+import type { View } from '../view'
 
+/**
+ * Render layers, bottom to top (BUILD_PLAN §3). Camera moves transform the whole scene.
+ * In v1 "back" sits just above the opaque camera (under front FX): truly behind you needs
+ * person segmentation (stretch goal), which will cut the camera layer over it.
+ */
 export interface Stage {
   app: Application
-  /** Debug drawings (Phase 0 only; moves to the Control window in Phase 2). */
+  /** back FX + camera + front FX; shake/zoom apply here so effects stay glued to the video. */
+  scene: Container
+  back: Container
+  front: Container
+  overlay: Container
+  /** Debug drawings (Phase 0/1 only; moves to the Control window in Phase 2). */
   debug: Container
 }
 
-export async function createStage(video: HTMLVideoElement): Promise<Stage> {
+export async function createStage(video: HTMLVideoElement, view: View): Promise<Stage> {
   const app = new Application()
   await app.init({
-    width: FRAME_WIDTH,
-    height: FRAME_HEIGHT,
+    width: view.width,
+    height: view.height,
     background: '#000000',
     preference: 'webgl',
     antialias: false,
@@ -20,13 +30,23 @@ export async function createStage(video: HTMLVideoElement): Promise<Stage> {
   })
   document.body.appendChild(app.canvas)
 
-  // updateFPS 0 = upload the latest camera frame every render.
+  // updateFPS 0: Pixi uploads each new camera frame (it uses requestVideoFrameCallback).
   const source = new VideoSource({ resource: video, autoPlay: true, updateFPS: 0 })
   const camera = new Sprite(new Texture({ source }))
-  camera.width = FRAME_WIDTH
-  camera.height = FRAME_HEIGHT
+  camera.width = view.width
+  camera.height = view.height
+  if (view.mirror) {
+    // Flip the picture only; effect coordinates are mirrored in view.toScreen.
+    camera.scale.x *= -1
+    camera.x = view.width
+  }
 
+  const scene = new Container()
+  const back = new Container()
+  const front = new Container()
+  scene.addChild(camera, back, front)
+  const overlay = new Container()
   const debug = new Container()
-  app.stage.addChild(camera, debug)
-  return { app, debug }
+  app.stage.addChild(scene, overlay, debug)
+  return { app, scene, back, front, overlay, debug }
 }

@@ -78,9 +78,3 @@ export function matchWords(result: VoskResult, words: string[], clock: AudioCloc
   }
   return hits
 }
-
-/** True if a partial transcript contains the word/phrase as whole tokens. */
-export function partialContains(partial: string, target: string): boolean {
-  const escaped = normalize(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(normalize(partial))
-}
