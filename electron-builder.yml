@@ -1,0 +1,13 @@
+# Packaging config (used in Phase 5; electron-builder is installed then).
+appId: dev.skillcam.app
+productName: Skillcam
+directories:
+  output: release
+files:
+  - out/**/*
+mac:
+  target: dmg
+  category: public.app-category.video
+  extendInfo:
+    NSCameraUsageDescription: Skillcam reads your camera to recognize gestures and render effects. Video never leaves your Mac.
+    NSMicrophoneUsageDescription: Skillcam listens for your trigger words. Audio never leaves your Mac.

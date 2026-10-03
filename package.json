@@ -1,0 +1,29 @@
+{
+  "name": "skillcam",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Say a word or make a gesture, and your camera feed reacts, live.",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "fetch-assets": "bash scripts/fetch-assets.sh",
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "pixi.js": "^8.22.0",
+    "vosk-browser": "^0.0.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "electron": "^44.5.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.3"
+  }
+}
