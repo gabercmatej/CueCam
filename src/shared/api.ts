@@ -16,6 +16,8 @@ export interface AppStatus {
   /** Required model files missing from assets/ (relative paths). */
   missingAssets: string[]
   hotkey: HotkeyStatus
+  /** The folder with skillcam.config.json, reactions/ and effects/clips/ (the project folder in dev). */
+  folder: string
 }
 
 /** Files that changed on disk under a media folder (paths relative to it, "/" separators). */
@@ -32,6 +34,8 @@ export interface SkillcamApi {
   /** Config media paths (files or folders inside reactions/) → the files each one means (empty = missing). */
   resolveMedia(entries: string[]): Promise<Record<string, string[]>>
   getStatus(): Promise<AppStatus>
+  /** Opens the config/reactions folder in Finder. */
+  showFolder(): Promise<string>
   onStatus(callback: (status: AppStatus) => void): void
   /** The global arm/disarm hotkey was pressed. */
   onToggleArmed(callback: () => void): void

@@ -144,7 +144,8 @@ async function main(): Promise<void> {
   let onMediaReady: ((change: MediaChange) => void) | null = null
   window.skillcam.onMediaChanged((change) => onMediaReady?.(change))
   const noop = (): void => {}
-  control?.on({ toggleArmed: () => toggleArmed(), test: noop, setRuleEnabled: noop, sendToCall: noop, monitorVolume: noop })
+  const showFolder = (): void => void window.skillcam.showFolder()
+  control?.on({ toggleArmed: () => toggleArmed(), test: noop, setRuleEnabled: noop, sendToCall: noop, monitorVolume: noop, showFolder })
   const cam = new LiveCamera(startup?.video.camera)
   // Until the camera works, the panel shows only that (everything else starts after it).
   const publishWaiting = (): void => {
@@ -159,7 +160,7 @@ async function main(): Promise<void> {
     const c = latestConfig
     const configIssue: Issue[] = c.ok && !c.error ? [] : [{ level: 'error', title: 'skillcam.config.json is invalid', detail: c.error ?? '' }]
     control.update(
-      { armed: armedEarly, hotkey: appStatus?.hotkey ?? null, health: h, issues: configIssue, last: null, gestures: '', heard: [], heardText: '', ruleProblems: new Map(), audio: { route: '', micDb: -120, mixDb: -120 } },
+      { armed: armedEarly, hotkey: appStatus?.hotkey ?? null, health: h, issues: configIssue, last: null, gestures: '', heard: [], heardText: '', ruleProblems: new Map(), audio: { route: '', micDb: -120, mixDb: -120 }, folder: appStatus?.folder ?? '' },
       performance.now()
     )
   }
@@ -229,7 +230,8 @@ async function main(): Promise<void> {
       control?.setRuleStates(config?.rules.map((r) => !disabledKeys.has(ruleKey(r))) ?? [])
     },
     sendToCall: (on: boolean) => audio.setSendToCall(on),
-    monitorVolume: (v: number) => audio.setMonitorVolume(v)
+    monitorVolume: (v: number) => audio.setMonitorVolume(v),
+    showFolder
   }
   control?.on(handlers)
   /** The effects list, from the config and the switches (every row re-read, so no row can show a stale switch). */
@@ -906,7 +908,8 @@ async function main(): Promise<void> {
         route: call.callActive ? `→ ${call.output.replace(/ \(Virtual\)$/, '')}` : audio.sendingToCall ? '' : `effects play on ${call.output}`,
         micDb: call.micDb,
         mixDb
-      }
+      },
+      folder: appStatus?.folder ?? ''
     }
   }
   function publishStats(): void {

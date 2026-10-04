@@ -1,13 +1,48 @@
-# Packaging config (used in Phase 5; electron-builder is installed then).
+# Skillcam.app + .dmg for Apple Silicon. Build: npm run dist (→ release/).
 appId: dev.skillcam.app
 productName: Skillcam
+copyright: Copyright © 2026 Matej Gaberc
 directories:
   output: release
+  buildResources: build
+# The built app: main, preload, renderer. The renderer includes assets/ (MediaPipe models + wasm,
+# the Vosk model), copied there by electron-vite (publicDir), so the app runs offline out of the box.
 files:
   - out/**/*
+  - package.json
+  # Vite bundles the renderer's libraries; main imports only zod at runtime.
+  - '!node_modules/**/*'
+  - node_modules/zod/**/*
+  - '!out/.tsc/**/*'
+electronLanguages: [en]
+# Defaults for the user folder (~/Library/Application Support/Skillcam), copied there on first run.
+extraResources:
+  - from: skillcam.config.json
+    to: defaults/skillcam.config.json
+  - from: reactions
+    to: defaults/reactions
+    filter: ['**/*', '!**/.DS_Store']
+  - from: effects/clips
+    to: defaults/effects/clips
+    filter: ['**/*', '!.gitkeep', '!**/.DS_Store']
+asar: true
+npmRebuild: false
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch: arm64
+    - target: dir
+      arch: arm64
   category: public.app-category.video
+  icon: build/icon.icns
+  # Unsigned local build: ad-hoc signature only ("-"), which Apple Silicon needs to launch the app and
+  # macOS needs to remember the camera/mic permission. No Developer ID, no notarization, so no hardened runtime.
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
   extendInfo:
-    NSCameraUsageDescription: Skillcam reads your camera to recognize gestures and render effects. Video never leaves your Mac.
-    NSMicrophoneUsageDescription: Skillcam listens for your trigger words. Audio never leaves your Mac.
+    NSCameraUsageDescription: Skillcam reads your camera to recognize gestures and draw effects on your video. Video stays on your Mac.
+    NSMicrophoneUsageDescription: Skillcam listens for your trigger words and claps, and can send your voice with effect sounds to a call. Audio stays on your Mac.
+dmg:
+  title: Skillcam
+  artifactName: Skillcam-${version}-arm64.${ext}

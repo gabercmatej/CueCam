@@ -108,6 +108,8 @@ export const STYLE = `
   }
   .test:hover { border-color: oklch(0.45 0.01 40); background: oklch(0.26 0.008 40); }
   .test:active { background: oklch(0.3 0.008 40); }
+  .files { margin-top: 12px; color: var(--muted); }
+  .files .path { font: 12px ui-monospace, "SF Mono", Menlo, monospace; color: var(--faint); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Native checkbox drawn as a switch (same control, same keyboard behaviour). */
   .switch { appearance: none; margin: 0; flex: none; width: 30px; height: 18px; border-radius: 999px; background: oklch(0.34 0.008 40); position: relative; cursor: pointer; transition: background-color 150ms var(--ease); vertical-align: middle; }

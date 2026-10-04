@@ -26,9 +26,9 @@ If Skillcam is set to `"video": { "outputHeight": 720 }` (a slower Mac), use 128
 
 ## 3. Add the Skillcam Output window
 
-1. Start Skillcam (`npm run dev`) so the Output window exists.
+1. Start Skillcam (the app, or `npm run dev`) so the Output window exists.
 2. In OBS, Sources → **+** → **macOS Screen Capture** → name it "Skillcam" → OK.
-3. Method: **Window Capture**. Window: **Skillcam Output**. In dev builds it may be listed under the app name "Electron": pick `[Electron] Skillcam Output`.
+3. Method: **Window Capture**. Window: **Skillcam Output**. The app lists it as `[Skillcam] Skillcam Output`; with `npm run dev` it's under the name "Electron": `[Electron] Skillcam Output`.
 4. Untick **Show Window Shadow** if the option is there. Leave **Hide cursor** ticked.
 5. Click OK.
 

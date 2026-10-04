@@ -6,6 +6,7 @@ const status = (over: Partial<AppStatus> = {}): AppStatus => ({
   permissions: { camera: 'granted', microphone: 'granted' },
   missingAssets: [],
   hotkey: { accelerator: 'CommandOrControl+Shift+K', registered: true, error: null },
+  folder: '/tmp/Skillcam',
   ...over
 })
 

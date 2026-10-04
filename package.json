@@ -11,7 +11,9 @@
     "build": "electron-vite build",
     "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dist": "npm run build && electron-builder --mac",
+    "icon": "bash scripts/make-icon.sh"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
@@ -22,9 +24,11 @@
   "devDependencies": {
     "@types/node": "^24.19.1",
     "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^5.0.3"
-  }
+  },
+  "author": "Matej Gaberc"
 }

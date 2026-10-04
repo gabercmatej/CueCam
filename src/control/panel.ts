@@ -81,6 +81,8 @@ export interface PanelState {
   /** Rule index → why it can't show its files. */
   ruleProblems: ReadonlyMap<number, string>
   audio: { route: string; micDb: number; mixDb: number }
+  /** Where skillcam.config.json and reactions/ live (empty until main has said). */
+  folder: string
 }
 
 export interface PanelHandlers {
@@ -90,6 +92,8 @@ export interface PanelHandlers {
   sendToCall(on: boolean): void
   /** 0–1; 0 = monitor off. */
   monitorVolume(volume: number): void
+  /** Open the config/reactions folder in Finder. */
+  showFolder(): void
 }
 
 interface LabelText {
@@ -104,6 +108,8 @@ const LINK_NAMES = { camera: 'Camera', tracking: 'Tracking', speech: 'Speech', c
 /** dBFS → 0–1 over −60…0 dB. */
 const meterLevel = (db: number): number => Math.max(0, Math.min(1, (db + 60) / 60))
 const dbText = (db: number): string => (db <= -119 ? '—' : `${db.toFixed(0)} dB`)
+/** "/Users/name/Library/…" → "~/Library/…". */
+const homeShort = (path: string): string => path.replace(/^\/Users\/[^/]+/, '~')
 const ago = (ms: number): string => (ms < 1500 ? 'just now' : ms < 60_000 ? `${Math.round(ms / 1000)} s ago` : `${Math.round(ms / 60_000)} min ago`)
 
 /** Sets text only when it changed (a DOM write invalidates layout; most values repeat). */
@@ -134,6 +140,7 @@ export class ControlPanel {
   private readonly heardText: HTMLElement
   private heardKey = ''
   private readonly ruleBody: HTMLTableSectionElement
+  private readonly folderPath: HTMLElement
   private rows: { tr: HTMLTableRowElement; toggle: HTMLInputElement; problem: HTMLElement; firedAt: number }[] = []
   private readonly sendToCall: HTMLInputElement
   private readonly monitor: HTMLInputElement
@@ -230,6 +237,13 @@ export class ControlPanel {
     const table = el('table', 'rules')
     this.ruleBody = el('tbody')
     table.append(this.ruleBody)
+    const showFolder = el('button', 'test', 'Show in Finder')
+    showFolder.type = 'button'
+    showFolder.title = 'Edit skillcam.config.json, or add and replace files in reactions/. Changes apply without a restart.'
+    showFolder.addEventListener('click', () => this.handlers?.showFolder())
+    this.folderPath = el('code', 'path')
+    const folderRow = el('div', 'row files')
+    folderRow.append(el('span', '', 'Config and reactions'), this.folderPath, showFolder)
 
     // Audio
     this.sendToCall = switchBox()
@@ -289,7 +303,7 @@ export class ControlPanel {
       strip,
       this.issueList,
       section('Live', canvas, facts),
-      section('Effects', table),
+      section('Effects', table, folderRow),
       section('Audio', audio),
       this.debug
     )
@@ -434,6 +448,7 @@ export class ControlPanel {
     }
     issues.push(...s.issues)
     this.renderIssues(issues)
+    text(this.folderPath, homeShort(s.folder))
 
     if (s.last) {
       this.lastFact.box.classList.toggle('fresh', now - s.last.at < 3000)

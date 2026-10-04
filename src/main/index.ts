@@ -1,11 +1,12 @@
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, globalShortcut, ipcMain, net, powerSaveBlocker, protocol, screen, session, systemPreferences } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, net, powerSaveBlocker, protocol, screen, session, shell, systemPreferences } from 'electron'
 import type { AppStatus, HotkeyStatus, PermissionStatus } from '../shared/api'
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
 import { ConfigState } from './configState'
 import { insideRoot, resolveMedia, watchMedia } from './media'
+import { pathsIn, seedUserFolder } from './paths'
 import { missingAssets } from './status'
 
 /** Output size in real pixels for `video.outputHeight` (16:9). */
@@ -19,12 +20,18 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
-// Dev: the project root. Packaged paths for config + clips are a Phase 5 decision.
-const ROOT = app.getAppPath()
-const CONFIG_FILE = join(ROOT, 'skillcam.config.json')
-const CLIPS_DIR = join(ROOT, 'effects', 'clips')
-const REACTIONS_DIR = join(ROOT, 'reactions')
-const ASSETS_DIR = join(ROOT, 'assets')
+// Dev: everything in the project folder. Packaged: config, reactions/ and effects/clips/ in
+// ~/Library/Application Support/Skillcam/ (seeded from the bundled defaults on first run), models
+// inside the app. Chromium's own data goes to a hidden subfolder so the user folder holds only your files.
+const USER_FOLDER = join(app.getPath('appData'), 'Skillcam')
+if (app.isPackaged) app.setPath('userData', join(USER_FOLDER, '.app-data'))
+const PATHS = app.isPackaged
+  ? pathsIn(USER_FOLDER, join(import.meta.dirname, '../renderer'))
+  : pathsIn(app.getAppPath(), join(app.getAppPath(), 'assets'))
+const CONFIG_FILE = PATHS.config
+const CLIPS_DIR = PATHS.clips
+const REACTIONS_DIR = PATHS.reactions
+const ASSETS_DIR = PATHS.assets
 
 let output: BrowserWindow | null = null
 let control: BrowserWindow | null = null
@@ -35,7 +42,8 @@ app.on('before-quit', () => (quitting = true))
 const status: AppStatus = {
   permissions: { camera: 'unknown', microphone: 'unknown' },
   missingAssets: [],
-  hotkey: { accelerator: '', registered: false, error: null }
+  hotkey: { accelerator: '', registered: false, error: null },
+  folder: PATHS.folder
 }
 function publishStatus(): void {
   output?.webContents.send('status:changed', status)
@@ -273,6 +281,15 @@ function logConfig(result: ConfigResult): void {
 }
 
 void app.whenReady().then(async () => {
+  if (app.isPackaged) {
+    try {
+      const { copied, failed } = seedUserFolder(PATHS, pathsIn(join(process.resourcesPath, 'defaults'), ''))
+      if (copied.length) console.log(`[files] created ${copied.join(', ')} in ${PATHS.folder}`)
+      for (const f of failed) console.error(`[files] could not create ${f} (retried on the next launch)`)
+    } catch (err) {
+      console.error(`[files] could not set up ${PATHS.folder}: ${(err as Error).message}`)
+    }
+  }
   lockDownSession()
   serveMedia()
   ipcMain.handle('media:resolve', (_event, entries: unknown) =>
@@ -284,6 +301,11 @@ void app.whenReady().then(async () => {
   config.update(initial)
   logConfig(initial)
   ipcMain.handle('config:get', () => config.current)
+  ipcMain.handle('folder:show', async () => {
+    const error = await shell.openPath(PATHS.folder)
+    if (error) console.warn(`[files] could not open ${PATHS.folder}: ${error}`)
+    return error
+  })
   watchConfig(CONFIG_FILE, (result) => {
     config.update(result)
     logConfig(result)

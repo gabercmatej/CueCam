@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Skillcam app icon: a camera with a spark. macOS grid: 824 pt tile at 100 pt inset. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff5a3c"/>
+      <stop offset="1" stop-color="#d8143a"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="400" x2="0" y2="660" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a0a16"/>
+      <stop offset="1" stop-color="#7a1028"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="130" x2="0" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff6c2"/>
+      <stop offset="1" stop-color="#ffc21a"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+
+  <!-- Camera -->
+  <rect x="316" y="318" width="150" height="70" rx="22" fill="#fff"/>
+  <rect x="212" y="360" width="600" height="380" rx="86" fill="#fff"/>
+  <circle cx="512" cy="550" r="138" fill="url(#lens)"/>
+  <circle cx="512" cy="550" r="138" fill="none" stroke="#ffd9de" stroke-width="10" opacity="0.5"/>
+  <circle cx="512" cy="550" r="72" fill="#c4163a"/>
+  <circle cx="478" cy="512" r="24" fill="#fff" opacity="0.85"/>
+  <circle cx="300" cy="440" r="18" fill="#d8143a"/>
+
+  <!-- Spark: bg-coloured outline separates it from the camera corner -->
+  <g stroke="url(#bg)" stroke-width="26" stroke-linejoin="round" paint-order="stroke" fill="url(#spark)">
+    <path d="M760 150 Q772 286 908 298 Q772 310 760 446 Q748 310 612 298 Q748 286 760 150 Z"/>
+    <path d="M852 418 Q857 463 902 468 Q857 473 852 518 Q847 473 802 468 Q847 463 852 418 Z"/>
+  </g>
+  <path d="M640 168 Q643 197 672 200 Q643 203 640 232 Q637 203 608 200 Q637 197 640 168 Z" fill="#fff6c2"/>
+</svg>

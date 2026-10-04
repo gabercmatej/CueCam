@@ -1,10 +1,20 @@
+# Dependencies and build output
 node_modules/
 out/
 dist/
 release/
-.DS_Store
-*.log
-.superpowers/
-# Downloaded model files (fetched by scripts/fetch-assets.sh)
+build/icon.iconset/
+
+# Downloaded model files (fetched by scripts/fetch-assets.sh; bundled into the app at build time)
 assets/mediapipe/
 assets/vosk/
+
+# Local tooling, logs, secrets
+.DS_Store
+*.log
+.env
+.env.*
+.claude/
+.superpowers/
+.vscode/
+*.pem

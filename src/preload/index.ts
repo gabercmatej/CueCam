@@ -10,6 +10,7 @@ const api: SkillcamApi = {
   },
   resolveMedia: (entries: string[]): Promise<Record<string, string[]>> => ipcRenderer.invoke('media:resolve', entries),
   getStatus: (): Promise<AppStatus> => ipcRenderer.invoke('status:get'),
+  showFolder: (): Promise<string> => ipcRenderer.invoke('folder:show'),
   onStatus: (callback: (status: AppStatus) => void): void => {
     ipcRenderer.on('status:changed', (_event, status: AppStatus) => callback(status))
   },
