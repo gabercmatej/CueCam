@@ -3,15 +3,15 @@
   "defaultCooldownMs": 2000,
   "performance": { "trackEvery": 2, "adaptive": true, "trackerDelegate": "GPU" },
   "audio": { "volume": 1, "muted": false },
-  "words": ["love you", "fire", "boom", "let's go", "yippie", "bye", "no way"],
+  "words": ["I love you", "fire", "boom", "let's go", "bye", "no way"],
   "rules": [
     { "when": { "gesture": "ThumbUp" }, "play": "thumbs_up" },
     { "when": { "gesture": "ThumbDown" }, "play": "thumbs_down" },
     { "when": { "gesture": "Victory" }, "play": "victory" },
     { "when": { "gesture": "Fist" }, "play": "confetti_hand", "perHand": true, "cooldownMs": 700 },
     { "when": { "gesture": "Rock" }, "play": ["rock_gif", "rock_sound"], "cooldownMs": 3000 },
-    { "when": { "word": "love you" }, "play": "hearts", "cooldownMs": 5000 },
-    { "when": { "gesture": "Heart" }, "play": "hearts", "cooldownMs": 5000 },
+    { "when": { "word": "I love you" }, "play": "hearts", "cooldownMs": 5000, "confirm": "final" },
+    { "when": { "gesture": "Heart" }, "play": "hearts_between_hands" },
     { "when": { "gesture": "FingerGun" }, "play": "finger_gun" },
     { "when": { "gesture": "Pinch" }, "play": "light_paint", "perHand": true, "cooldownMs": 0 },
     { "when": { "gesture": "OpenPalm", "word": "fire", "withinMs": 1500 }, "play": "fire_palm", "cooldownMs": 2000 },
@@ -21,7 +21,6 @@
     { "when": { "gesture": "Pray" }, "play": "pray", "cooldownMs": 3000 },
     { "when": { "word": "boom" }, "play": ["explosion", "shake"], "cooldownMs": 4000 },
     { "when": { "word": "let's go" }, "play": "lets_go", "cooldownMs": 4000 },
-    { "when": { "word": "yippie" }, "play": "lets_go", "cooldownMs": 4000 },
     { "when": { "word": "bye" }, "play": "curtains", "cooldownMs": 6000 }
   ],
   "effects": {
@@ -31,7 +30,8 @@
     "confetti_hand": { "type": "particles", "preset": "confetti", "anchor": "hand", "count": 120 },
     "rock_gif": { "type": "media", "files": "rock" },
     "rock_sound": { "type": "sound", "files": "rock" },
-    "hearts": { "type": "media", "files": "i love you", "placement": "fullscreen", "holdMs": 5000, "fadeMs": 500, "muted": true },
+    "hearts_between_hands": { "type": "particles", "preset": "hearts", "anchor": "between-hands", "count": 60 },
+    "hearts": { "type": "media", "files": "i love you", "placement": "fullscreen", "holdMs": 4500, "fadeMs": 500, "muted": true },
     "finger_gun": { "type": "media", "files": "finger gun" },
     "light_paint": { "type": "lightPaint", "color": "rainbow", "width": 14, "fadeMs": 300 },
     "fire_palm": {

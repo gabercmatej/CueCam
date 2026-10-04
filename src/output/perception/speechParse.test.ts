@@ -5,6 +5,10 @@ describe('buildGrammar', () => {
   it('lowercases, dedupes, and appends [unk]', () => {
     expect(JSON.parse(buildGrammar(['Boom', 'fire', ' boom ', 'bye']))).toEqual(['boom', 'fire', 'bye', '[unk]'])
   })
+
+  it('adds decoys after the triggers', () => {
+    expect(JSON.parse(buildGrammar(['boom'], ['room', 'Boom', 'the']))).toEqual(['boom', 'room', 'the', '[unk]'])
+  })
 })
 
 describe('AudioClock', () => {

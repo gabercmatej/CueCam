@@ -20,9 +20,12 @@ export interface WordHit {
 
 const normalize = (w: string): string => w.trim().toLowerCase()
 
-/** The Vosk grammar: the trigger list plus `[unk]` so anything else maps to unknown. */
-export function buildGrammar(words: string[]): string {
-  return JSON.stringify([...new Set(words.map(normalize))].concat('[unk]'))
+/**
+ * The Vosk grammar: the trigger list, decoys (harmless words ordinary speech can land on instead of
+ * a trigger) and `[unk]` for anything else.
+ */
+export function buildGrammar(words: string[], decoys: readonly string[] = []): string {
+  return JSON.stringify([...new Set([...words.map(normalize), ...decoys.map(normalize)])].concat('[unk]'))
 }
 
 interface Chunk {

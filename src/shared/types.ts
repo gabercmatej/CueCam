@@ -46,8 +46,10 @@ export interface WordEvent {
   type: 'word'
   word: string
   confidence: number
-  /** True when fired from a partial result (fast path); finals only add occurrences partials missed. */
+  /** From a partial result (fast path) rather than the final one. */
   partial: boolean
+  /** Final results only: a partial already reported this occurrence ("partial" rules skip it). */
+  seenInPartial?: boolean
   at: number
 }
 

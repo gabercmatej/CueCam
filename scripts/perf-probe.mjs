@@ -5,6 +5,8 @@
 //   node scripts/perf-probe.mjs sample [seconds=10]     mean/min/max of window.__skillcam.perf
 //   node scripts/perf-probe.mjs eval '<expression>'      evaluate in the Output page (awaits promises), print JSON
 //   node scripts/perf-probe.mjs shot <file.png>          screenshot of the Output page
+//   node scripts/perf-probe.mjs feed <file.wav> [speed]  feed a 16 kHz mono 16-bit WAV into speech recognition
+//                                                        (silently, instead of the mic); prints the word events
 const PORT = process.env.CDP_PORT ?? '9222'
 /** PAGE="Skillcam Control" targets the Control window instead (for `shot` and `eval`). */
 const TITLE = process.env.PAGE ?? 'Skillcam Output'
@@ -41,6 +43,16 @@ async function evaluate(expression) {
 
 if (cmd === 'eval') {
   console.log(JSON.stringify(await evaluate(arg), null, 2))
+} else if (cmd === 'feed') {
+  const { readFileSync } = await import('node:fs')
+  const wav = readFileSync(arg)
+  const data = wav.indexOf('data')
+  if (data < 0 || wav.readUInt32LE(24) !== 16000 || wav.readUInt16LE(22) !== 1) throw new Error('need a 16 kHz mono 16-bit WAV')
+  const pcm = wav.subarray(data + 8).toString('base64')
+  const speed = Number(process.argv[4] ?? 4)
+  const events = await evaluate(`window.__skillcamDev.feedSpeech(${JSON.stringify(pcm)}, ${speed})`)
+  console.log(events.join('\n'))
+  console.log(`--- ${events.length} word events, ${events.filter((e) => e.endsWith('FIRED')).length} fired a rule`)
 } else if (cmd === 'shot') {
   const { data } = await send('Page.captureScreenshot', { format: 'png' })
   const { writeFileSync } = await import('node:fs')

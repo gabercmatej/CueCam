@@ -53,9 +53,16 @@ const STYLE = `
   canvas { width: ${PREVIEW.width}px; height: ${PREVIEW.height}px; background: #000; border-radius: 6px; display: block; }
   pre { margin: 0; white-space: pre-wrap; }
   .muted { color: #8b8d93; }
-  .toggles { display: flex; gap: 16px; }
+  .toggles { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  input[type=range] { width: 120px; vertical-align: middle; }
   label { cursor: pointer; user-select: none; }
 `
+
+export interface AudioControls {
+  sendToCall(on: boolean): void
+  /** 0–1; 0 = monitor off. */
+  monitorVolume(volume: number): void
+}
 
 interface LabelText {
   title: string
@@ -71,6 +78,10 @@ export class ControlPanel {
   private readonly log: HTMLPreElement
   private readonly showMask: HTMLInputElement
   private readonly showFace: HTMLInputElement
+  private readonly sendToCall: HTMLInputElement
+  private readonly monitor: HTMLInputElement
+  private readonly monitorText: HTMLSpanElement
+  private audioHandlers: AudioControls | null = null
   /** The latest segmentation mask as a tinted image, rebuilt per mask only while the toggle is on. */
   private readonly maskCanvas: HTMLCanvasElement
   private maskImage: ImageData | null = null
@@ -106,8 +117,28 @@ export class ControlPanel {
     const toggles = doc.createElement('div')
     toggles.className = 'toggles'
     toggles.append(maskLabel, faceLabel)
+
+    // Call audio: the switch and the monitor volume act at once (not saved to the config).
+    const [callLabel, sendToCall] = toggle('send to call')
+    this.sendToCall = sendToCall
+    sendToCall.addEventListener('change', () => this.audioHandlers?.sendToCall(sendToCall.checked))
+    const monitorLabel = doc.createElement('label')
+    this.monitor = doc.createElement('input')
+    this.monitor.type = 'range'
+    this.monitor.min = '0'
+    this.monitor.max = '100'
+    this.monitorText = doc.createElement('span')
+    monitorLabel.append('monitor ', this.monitor, this.monitorText)
+    this.monitor.addEventListener('input', () => {
+      this.monitorText.textContent = ` ${this.monitor.value}%`
+      this.audioHandlers?.monitorVolume(Number(this.monitor.value) / 100)
+    })
+    const audioRow = doc.createElement('div')
+    audioRow.className = 'toggles'
+    audioRow.append(callLabel, monitorLabel)
+
     const main = doc.createElement('main')
-    main.append(canvas, toggles, this.stats, this.log)
+    main.append(canvas, toggles, audioRow, this.stats, this.log)
     doc.body.append(main)
   }
 
@@ -214,6 +245,18 @@ export class ControlPanel {
         g.fillText(info.detail, x, y + 34)
       }
     }
+  }
+
+  onAudio(handlers: AudioControls): void {
+    this.audioHandlers = handlers
+  }
+
+  /** Shows the current call switch and monitor volume (after a config change). */
+  setAudioControls(sendToCall: boolean, monitorVolume: number): void {
+    if (this.win.closed) return
+    this.sendToCall.checked = sendToCall
+    this.monitor.value = String(Math.round(monitorVolume * 100))
+    this.monitorText.textContent = ` ${this.monitor.value}%`
   }
 
   setStats(lines: string[]): void {

@@ -1,3 +1,4 @@
+import type { GestureEvent } from '../../shared/types'
 import { describe, expect, it } from 'vitest'
 import { makeHand, POSES } from './__fixtures__/hands'
 import { analyzeHand, type Landmark } from './handGeometry'
@@ -237,6 +238,17 @@ describe('two-hand gestures', () => {
   /** Feeds `frames` (pairs of wrist x for Right/Left hands, or null = one merged hand) every `step` ms. */
   const feed = (t: GestureTracker, frames: (readonly [number, number] | null)[], step = 33, from = 0) =>
     frames.flatMap((f, i) => t.update(f ? [palmAt(f[0], 'Right', null), palmAt(f[1], 'Left', null)] : [palmAt(0.5, 'Right', null)], from + i * step).events)
+  /** Like feed, plus the times of the clap contacts reported. */
+  const feedContacts = (t: GestureTracker, frames: (readonly [number, number] | null)[], step = 33) => {
+    const events: GestureEvent[] = []
+    const contacts: number[] = []
+    frames.forEach((f, i) => {
+      const u = t.update(f ? [palmAt(f[0], 'Right', null), palmAt(f[1], 'Left', null)] : [palmAt(0.5, 'Right', null)], i * step)
+      events.push(...u.events)
+      if (u.clapContact) contacts.push(i * step)
+    })
+    return { events, contacts }
+  }
 
   it('Pray: palms pressed together, fingers up, held still for 500 ms', () => {
     const t = new GestureTracker(view)
@@ -261,26 +273,24 @@ describe('two-hand gestures', () => {
     expect(isPrayPose(geo2(0.3), geo2(0.7))).toBe(false)
   })
 
-  it('Clap: hands meeting fast fire Clap at once, and no Pray right after', () => {
+  it('Clap contact: hands meeting fast report one contact at once (never a Clap event), and no Pray right after', () => {
     const t = new GestureTracker(view)
     const approach = [[0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.49, 0.51]] as const
     const still = Array.from({ length: 20 }, () => [0.49, 0.51] as const)
-    const events = feed(t, [...approach, ...still])
-    expect(events.filter((e) => e.gesture === 'Clap')).toHaveLength(1)
-    expect(events.find((e) => e.gesture === 'Clap')!.at).toBe(3 * 33)
+    const { events, contacts } = feedContacts(t, [...approach, ...still])
+    expect(contacts).toEqual([3 * 33])
+    expect(events.some((e) => e.gesture === 'Clap')).toBe(false)
     expect(events.some((e) => e.gesture === 'Pray')).toBe(false)
   })
 
-  it('Clap: contact that merges the hands into one detection still counts', () => {
+  it('Clap contact: hands that merge into one detection still count', () => {
     const t = new GestureTracker(view)
-    const events = feed(t, [[0.2, 0.8], [0.32, 0.68], [0.44, 0.56], null])
-    expect(events.filter((e) => e.gesture === 'Clap')).toHaveLength(1)
+    expect(feedContacts(t, [[0.2, 0.8], [0.32, 0.68], [0.44, 0.56], null]).contacts).toHaveLength(1)
   })
 
-  it('Clap: a slow approach is not a clap', () => {
+  it('Clap contact: a slow approach (touching your hands, fixing your hair) is no contact', () => {
     const t = new GestureTracker(view)
-    const events = feed(t, Array.from({ length: 30 }, (_, i) => [0.3 + i * 0.0065, 0.7 - i * 0.0065] as const))
-    expect(events.some((e) => e.gesture === 'Clap')).toBe(false)
+    expect(feedContacts(t, Array.from({ length: 30 }, (_, i) => [0.3 + i * 0.0065, 0.7 - i * 0.0065] as const)).contacts).toEqual([])
   })
 
   it('ClapDetector asks for burst tracking during a fast approach', () => {

@@ -37,9 +37,27 @@ const NONE: readonly Firing[] = Object.freeze([])
 
 const norm = (w: string): string => w.trim().toLowerCase().replace(/\s+/g, ' ')
 
-function matches(rulePart: { gesture?: string; word?: string }, e: TriggerEvent): boolean {
-  return e.type === 'gesture' ? rulePart.gesture === e.gesture : rulePart.word !== undefined && norm(rulePart.word) === norm(e.word)
+interface RulePart {
+  gesture?: string
+  word?: string
+  confirm?: 'partial' | 'final'
+  minConfidence?: number
 }
+
+/**
+ * Whether an event is this rule part. Word events come twice per spoken word (partial, then final):
+ * "partial" rules take the partial and only the finals no partial reported; "final" rules take only
+ * finals that are confident enough.
+ */
+function matches(rulePart: RulePart, e: TriggerEvent): boolean {
+  if (e.type === 'gesture') return rulePart.gesture === e.gesture
+  if (rulePart.word === undefined || norm(rulePart.word) !== norm(e.word)) return false
+  if (rulePart.confirm === 'final') return !e.partial && e.confidence >= (rulePart.minConfidence ?? 0)
+  return e.partial || !e.seenInPartial
+}
+
+/** The word half of a rule, with its confirm mode. */
+const wordPart = (rule: RuleConfig): RulePart => ({ word: rule.when.word, confirm: rule.confirm, minConfidence: rule.minConfidence })
 
 interface HeldSolo {
   /** The word event that is holding its solo rules back. */
@@ -59,6 +77,11 @@ export class TriggerEngine {
   /** Recent unconsumed events that could complete a combo. */
   private recent: TriggerEvent[] = []
   private held: HeldSolo[] = []
+  /**
+   * Words that completed a combo, and when. A spoken word arrives twice (partial, then final); the
+   * second arrival of an occurrence that already completed a combo must not fire a solo rule.
+   */
+  private comboWords = new Map<string, number>()
 
   get armed(): boolean {
     return this._armed
@@ -110,8 +133,8 @@ export class TriggerEngine {
       const { gesture, word, withinMs = 1500 } = rule.when
       if (gesture && word) {
         if (consumed) return
-        const wantPartner = e.type === 'gesture' ? { word } : { gesture }
-        if (!matches(e.type === 'gesture' ? { gesture } : { word }, e)) return
+        const wantPartner = e.type === 'gesture' ? wordPart(rule) : { gesture }
+        if (!matches(e.type === 'gesture' ? { gesture } : wordPart(rule), e)) return
         const partner =
           [...this.recent].reverse().find((r) => matches(wantPartner, r) && Math.abs(e.at - r.at) <= withinMs) ??
           (e.type === 'word' ? this.active.find((a) => matches(wantPartner, a)) : undefined)
@@ -120,7 +143,8 @@ export class TriggerEngine {
         if (!this.ready(i, rule, e.at, g.hand)) return
         this.recent = this.recent.filter((r) => r !== partner)
         // Held solo rules for this word are cancelled (all of them: "fire fire" holds twice).
-        this.held = this.held.filter((h) => !matches({ word }, h.event))
+        this.held = this.held.filter((h) => norm(h.event.word) !== norm(word))
+        this.comboWords.set(norm(word), e.at)
         consumed = true
         firings.push(this.fire(i, rule, e.at, g))
       }
@@ -129,8 +153,15 @@ export class TriggerEngine {
     if (consumed) return firings
 
     const hand = e.type === 'gesture' ? e.hand : undefined
+    if (e.type === 'word' && !e.partial && e.seenInPartial) {
+      const comboAt = this.comboWords.get(norm(e.word))
+      if (comboAt !== undefined && e.at - comboAt <= MAX_COMBO_WINDOW_MS) {
+        this.comboWords.delete(norm(e.word))
+        return firings
+      }
+    }
     const solos = this.rules.flatMap((rule, i) =>
-      !(rule.when.gesture && rule.when.word) && matches(rule.when, e) && this.ready(i, rule, e.at, hand) ? [i] : []
+      !(rule.when.gesture && rule.when.word) && matches({ ...rule.when, ...wordPart(rule) }, e) && this.ready(i, rule, e.at, hand) ? [i] : []
     )
     const holdMs = e.type === 'word' ? this.comboWindowFor(e) : 0
     if (e.type === 'word' && holdMs > 0 && solos.length > 0) {
@@ -144,12 +175,15 @@ export class TriggerEngine {
     return firings
   }
 
-  /** Longest window of the ready combos this word could start (0 = none). */
+  /**
+   * Longest window of the ready combos this word could start (0 = none). Whatever the combo's confirm
+   * mode: a "final" combo completes on this word's final result, which comes after this partial.
+   */
   private comboWindowFor(e: WordEvent): number {
     let ms = 0
     this.rules.forEach((rule, i) => {
       const { gesture, word, withinMs = 1500 } = rule.when
-      if (gesture && word && matches({ word }, e) && this.ready(i, rule, e.at)) ms = Math.max(ms, withinMs)
+      if (gesture && word && norm(word) === norm(e.word) && this.ready(i, rule, e.at)) ms = Math.max(ms, withinMs)
     })
     return ms
   }
@@ -157,6 +191,7 @@ export class TriggerEngine {
   private reset(): void {
     this.recent = []
     this.held = []
+    this.comboWords.clear()
   }
 
   private cooldownKey(i: number, rule: RuleConfig, hand: HandSide | 'Both' | undefined): string {

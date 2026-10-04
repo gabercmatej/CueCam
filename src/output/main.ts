@@ -2,6 +2,7 @@ import { ControlPanel } from '../control/panel'
 import type { Config, ConfigResult } from '../shared/config'
 import type { EffectContext, HandSide, Point, ScreenBox, TriggerEvent } from '../shared/types'
 import { AudioEngine } from './audio/audioEngine'
+import type { Onset } from './audio/clapOnset'
 import { openCamera } from './camera'
 import { FpsMeter, RollingAverage } from './debug/fpsMeter'
 import { CameraMoves } from './effects/cameraMove'
@@ -14,6 +15,7 @@ import { type Firing, TriggerEngine } from './engine/triggers'
 import { GestureLatency } from './perf/gestureLatency'
 import { QualityController, QUALITY_LEVELS } from './perf/quality'
 import { type FaceBox, FaceSmoother } from './perception/faceSmoother'
+import { ClapFusion, type FusedClap } from './perception/clapFusion'
 import { onEachVideoFrame } from './perception/frameLoop'
 import { assignSides, GESTURE_TUNING, GestureTracker, type HandState, type RawHand } from './perception/gestures'
 import type { HandPose } from './perception/__fixtures__/hands'
@@ -22,6 +24,7 @@ import { HandSmoother, type TrackedHand } from './perception/handSmoother'
 import { MODELS, PerceptionClient, type PerceptionMessage } from './perception/perceptionClient'
 import type { FrameTasks, HandsResult, TrackedHandResult, WorkerModels } from './perception/perceptionProtocol'
 import { type Task, TaskScheduler } from './perception/taskScheduler'
+import { decoysFor } from './perception/decoys'
 import { SpeechInput } from './perception/speech'
 import { createStage } from './render/stage'
 import { correctHandedness, OUTPUT_VIEW, toScreen } from './view'
@@ -108,7 +111,21 @@ async function main(): Promise<void> {
     // Missing clip file: a spark burst at the same spot so the trigger still reads.
     particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
   })
-  const audio = new AudioEngine()
+  const clapFusion = new ClapFusion()
+  /** The latest sound onset on the raw mic (clap or rejected), for the Control window. */
+  let lastOnset: { onset: Onset; at: number } | null = null
+  const onsetCounts = { clap: 0, quiet: 0, dull: 0, long: 0 }
+  // Set once the trigger engine exists (below); a sound can't arrive before the mic has started anyway.
+  let onFusedClap: (clap: FusedClap) => void = () => {}
+  const audio = new AudioEngine({
+    onOnset(onset, at) {
+      lastOnset = { onset, at }
+      onsetCounts[onset.verdict]++
+      if (onset.verdict !== 'clap') return
+      const clap = clapFusion.sound(at, performance.now())
+      if (clap) onFusedClap(clap)
+    }
+  })
   const media = new MediaEngine({ back: pixi.back, front: pixi.front }, pixi.app.renderer, view.width, view.height, view.mirror, audio, (cfg, ctx) => {
     // All files missing for an anchored/full-frame effect: a spark burst so the trigger still reads.
     particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
@@ -117,6 +134,8 @@ async function main(): Promise<void> {
   const registry = new EffectRegistry({ particles, clips, camera, media, lightPaint })
   const triggers = new TriggerEngine()
   const latency = new GestureLatency()
+  const audioControls = { sendToCall: (on: boolean) => audio.setSendToCall(on), monitorVolume: (v: number) => audio.setMonitorVolume(v) }
+  control?.onAudio(audioControls)
   /** Dev: fixture hands replacing the tracker's (end-to-end latency without a person on camera). */
   let fakeHands: TrackedHandResult[] | null = null
 
@@ -204,6 +223,8 @@ async function main(): Promise<void> {
   let speechDecodeShare = 1
   let micPeak = 0
   let lastWord = '—'
+  /** Dev: every word event and firing, for false-trigger counts. */
+  const wordLog: string[] = []
   const recent: string[] = []
   const log = (line: string): void => {
     recent.unshift(line)
@@ -231,6 +252,14 @@ async function main(): Promise<void> {
     return firings.length
   }
 
+  /** Camera contact + clap sound agreed: the Clap gesture. */
+  onFusedClap = (clap) => {
+    const t0 = performance.now()
+    if (dispatch({ type: 'gesture', gesture: 'Clap', hand: 'Both', position: clap.position, at: clap.at, heldFrom: clap.at }) > 0) {
+      latency.fired('Clap', clap.at, clap.at, t0, stage.capture.value)
+    }
+  }
+
   // Config (validated + hot-reloaded in main)
   let config: Config | null = null
   let speech: SpeechInput | null = null
@@ -246,7 +275,11 @@ async function main(): Promise<void> {
       gestures.setUsedGestures(new Set(config.rules.flatMap((r) => (r.when.gesture ? [r.when.gesture] : []))))
       registry.setEffects(config.effects)
       audio.configure(config.audio)
-      speech?.setWords(config.words)
+      const { windowMs, requireSound, ...sound } = config.clap
+      clapFusion.settings = { windowMs, requireSound }
+      audio.setClapSettings(sound)
+      control?.setAudioControls(audio.sendingToCall, audio.monitorVolume)
+      speech?.setWords(config.words, config.speech.decoys ? decoysFor(config.words) : [])
       quality.configure(config.performance)
       segmentation = config.performance.segmentation
       applyQuality()
@@ -307,6 +340,10 @@ async function main(): Promise<void> {
       burstCount++
     }
     control?.setLabels(update.hands)
+    if (update.clapContact) {
+      const clap = clapFusion.visual(msg.at, update.clapContact, performance.now())
+      if (clap) onFusedClap(clap)
+    }
     for (const e of update.events) {
       if (dispatch(e) > 0) latency.fired(e.gesture, e.heldFrom ?? e.at, e.at, t0, stage.capture.value)
     }
@@ -361,14 +398,16 @@ async function main(): Promise<void> {
       micPeak = Math.max(peak, micPeak * 0.8)
     },
     onWord(word, at) {
-      lastWord = `${word.word}${word.partial ? ' (partial)' : ` (final, ${Math.round(word.latencyMs ?? 0)} ms)`}`
+      const stage = word.partial ? 'partial' : `final ${word.confidence.toFixed(2)}, ${Math.round(word.latencyMs ?? 0)} ms${word.seenInPartial ? ', seen' : ''}`
+      lastWord = `${word.word} (${stage})`
       console.log(`[speech] ${lastWord}`)
-      dispatch({ type: 'word', word: word.word, confidence: word.confidence, partial: word.partial, at })
+      const fired = dispatch({ type: 'word', word: word.word, confidence: word.confidence, partial: word.partial, seenInPartial: word.seenInPartial, at })
+      if (import.meta.env.DEV) wordLog.push(`${lastWord}${fired ? ' → FIRED' : ''}`)
     }
   })
     .then((s) => {
       speech = s
-      if (config) s.setWords(config.words)
+      if (config) s.setWords(config.words, config.speech.decoys ? decoysFor(config.words) : [])
       speechStatus = 'on'
     })
     .catch((err: unknown) => {
@@ -403,6 +442,40 @@ async function main(): Promise<void> {
         await new Promise((r) => setTimeout(r, 600))
         fakeHands = null
         return latency.describe()
+      },
+      /**
+       * Feeds a recording (base64 16-bit PCM, 16 kHz mono, no header) into speech recognition instead of
+       * the mic, silently, and returns every word event (and whether it fired a rule) it produced.
+       */
+      async feedSpeech(pcm16Base64: string, speed = 4): Promise<string[]> {
+        if (!speech) throw new Error('speech not running')
+        const bytes = Uint8Array.from(atob(pcm16Base64), (c) => c.charCodeAt(0))
+        const pcm = new Int16Array(bytes.buffer, 0, bytes.length >> 1)
+        const samples = Float32Array.from(pcm, (v) => v / 32768)
+        wordLog.length = 0
+        triggers.setRules(config?.rules ?? [], config?.defaultCooldownMs ?? 2000)
+        // Rules fire as usual, but nothing may be heard while testing.
+        if (config) audio.configure({ ...config.audio, muted: true })
+        try {
+          await speech.feed(samples, speed)
+        } finally {
+          if (config) audio.configure(config.audio)
+        }
+        return [...wordLog]
+      },
+      /** Mix → BlackHole reader latency, silently (see AudioEngine.measureCallLatency). */
+      measureCallLatency: (runs?: number) => audio.measureCallLatency(runs),
+      audio: () => ({ ...audio.status, context: audio.contextInfo, latency: audio.latency(), mixDb: audio.mixDb(), clap: clapFusion.stats, onsets: onsetCounts, lastOnset }),
+      sendToCall: (on: boolean) => audio.setSendToCall(on),
+      /** A synthetic clap into the clap detector worklet only (silent): exercises the real DSP path. */
+      testClapSound: (amp?: number) => audio.injectTestClap(amp),
+      /** A clap sound on the raw mic, as if the worklet heard one `agoMs` ago (pairs with a fake contact). */
+      clapSound: (agoMs = 0) => {
+        const at = performance.now() - agoMs
+        onsetCounts.clap++
+        const clap = clapFusion.sound(at, performance.now())
+        if (clap) onFusedClap(clap)
+        return clap !== null
       },
       latency: () => ({ last: latency.last, avg: latency.averages(), count: latency.count }),
       /**
@@ -505,6 +578,7 @@ async function main(): Promise<void> {
     frameStart = now
     renderFps.tick(now)
     play(triggers.tick(now), 'held word')
+    clapFusion.expire(now)
     predicted = smoother.predict(cameraFrameAt)
     handPoints.length = 0
     for (const h of predicted) {
@@ -581,7 +655,34 @@ async function main(): Promise<void> {
     if (!f) return lastFace === null && quality.strides.face ? 'none' : quality.strides.face ? 'lost' : 'off'
     return `${f.visible ? 'seen' : 'HELD (occluded)'} ${(f.box.width * 100).toFixed(0)}% wide`
   }
+  /** dBFS → a 12-cell meter (−60…0 dB). */
+  const meter = (db: number): string => {
+    const n = Math.max(0, Math.min(12, Math.round(((db + 60) / 60) * 12)))
+    return '█'.repeat(n).padEnd(12, '·')
+  }
+  const dbText = (db: number): string => (db <= -119 ? '  —  ' : `${db.toFixed(0).padStart(3)} dB`)
+  const latencyText = (): string => {
+    const l = audio.latency()
+    return `latency: mic in ${l.micInput === null ? '?' : l.micInput.toFixed(0)} + audio ${l.base.toFixed(0)} + out ${l.output.toFixed(0)} ms`
+  }
+  const clapSoundLine = (): string => {
+    const c = config?.clap
+    const st = audio.status
+    const need = c ? `needs rise ≥ ${c.minRiseDb} dB, peak ≥ ${c.minLevelDb} dB, bright ≥ ${c.minBrightness}, ≤ ${c.maxDurationMs} ms` : ''
+    return `clap sound ${meter(st.brightDb)} ${dbText(st.brightDb)} (ref ${dbText(st.floorDb)}) · ${need}${c && !c.requireSound ? ' · SOUND NOT REQUIRED' : ''}`
+  }
+  const clapLastLine = (): string => {
+    const f = clapFusion.stats
+    const o = lastOnset
+    const last = o
+      ? `${o.onset.verdict === 'clap' ? 'CLAP' : `no (${o.onset.verdict})`} rise ${o.onset.riseDb.toFixed(0)} dB · peak ${o.onset.peakDb.toFixed(0)} dB · bright ${o.onset.brightness.toFixed(2)} · ${o.onset.durationMs.toFixed(0)} ms · ${((performance.now() - o.at) / 1000).toFixed(0)} s ago`
+      : 'none yet'
+    const offset = clapFusion.lastOffsetMs === null ? '' : ` · last sound ${clapFusion.lastOffsetMs >= 0 ? '+' : ''}${clapFusion.lastOffsetMs.toFixed(0)} ms vs contact`
+    return `clap last sound: ${last} · sounds clap ${onsetCounts.clap}/quiet ${onsetCounts.quiet}/dull ${onsetCounts.dull}/long ${onsetCounts.long} · claps ${f.fused}, camera only ${f.contactOnly}, sound only ${f.soundOnly}${offset}`
+  }
+  let mixDb = -120
   function publishStats(): void {
+    mixDb = audio.mixDb()
     const q = quality.settings
     control?.setStats([
       `render ${renderFps.fps.toFixed(0)} fps (cap ${q.maxRenderFps}) · camera ${cameraFps.fps.toFixed(0)} fps · tracked ${trackFps.fps.toFixed(0)}/s`,
@@ -592,7 +693,10 @@ async function main(): Promise<void> {
       `worker ms  total/frame ${ms(stage.worker)} · prep ${ms(stage.prep)} · segment ${ms(stage.segment)} · face ${ms(stage.face)} · mask apply (CPU; GPU upload counts in render) ${ms(stage.mask)}`,
       `segment ${segmentation ? `every ${quality.strides.segment} · mask ${q.mask.width}×${q.mask.height} · age ${maskAge()} · cutout ${pixi.camera.person.visible ? 'ON' : 'idle'}` : 'off'} · face ${faceStatus()}`,
       `long tasks ${longTaskPerS.toFixed(0)} ms/s · worker busy skips ${pipes.map((p) => p.scheduler.busySkips).join('/')} · hand bursts ${burstCount} · particles ${particles.count} · media ${media.count} · painting ${lightPaint.active}`,
-      `audio → ${audio.deviceLabel}`,
+      `audio → ${audio.status.output} · call ${audio.status.call} · monitor ${audio.status.monitor}`,
+      `mic ${meter(audio.status.micDb)} ${dbText(audio.status.micDb)} · mix ${meter(mixDb)} ${dbText(mixDb)} · ${audio.status.mic} · ${latencyText()}`,
+      clapSoundLine(),
+      clapLastLine(),
       `config ${configStatus} · ${triggers.armed ? 'ARMED' : 'disarmed'}`,
       `speech ${speechStatus} ${'█'.repeat(Math.round(micPeak * 12)).padEnd(12, '·')} decoding ${(speechDecodeShare * 100).toFixed(0)}% · last: ${lastWord}`
     ])

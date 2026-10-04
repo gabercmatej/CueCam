@@ -149,7 +149,7 @@ describe('Phase 3b config', () => {
     })
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    expect(r.config.audio).toEqual({ volume: 0.8, muted: false, device: 'BlackHole' })
+    expect(r.config.audio).toMatchObject({ volume: 0.8, muted: false, device: 'BlackHole' })
     expect(r.config.rules[0]!.perHand).toBe(true)
     expect(r.config.rules[1]!.perHand).toBe(false)
     expect(r.config.effects['paint']).toMatchObject({ color: 'rainbow', width: 14, fadeMs: 300 })
@@ -161,5 +161,30 @@ describe('Phase 3b config', () => {
     if (!r.ok) return
     expect(r.config.effects['g1']).toMatchObject({ gradeScope: 'all' })
     expect(r.config.effects['g2']).toMatchObject({ gradeScope: 'camera' })
+  })
+
+  it('defaults call audio to BlackHole with a quiet monitor, and clap to sound + camera', () => {
+    const r = parse(valid)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.config.audio.call).toEqual({ enabled: true, device: 'BlackHole', micVolume: 1, monitor: true, monitorVolume: 0.3 })
+    expect(r.config.clap).toMatchObject({ windowMs: 150, requireSound: true })
+    expect(r.config.speech.decoys).toBe(true)
+  })
+
+  it('word rules default to confirm "partial" and accept "final" with a confidence', () => {
+    const r = parse({
+      ...valid,
+      words: ['boom', "let's go"],
+      rules: [
+        { when: { word: 'boom' }, play: 'confetti_hand' },
+        { when: { word: "let's go" }, play: 'confetti_hand', confirm: 'final', minConfidence: 0.8 }
+      ]
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.config.rules[0]).toMatchObject({ confirm: 'partial' })
+    expect(r.config.rules[1]).toMatchObject({ confirm: 'final', minConfidence: 0.8 })
+    expect(parse({ ...valid, words: ['boom'], rules: [{ when: { word: 'boom' }, play: 'confetti_hand', confirm: 'maybe' }] }).ok).toBe(false)
   })
 })

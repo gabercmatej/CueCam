@@ -168,15 +168,64 @@ const Rule = z.object({
   play: z.union([z.string(), z.array(z.string()).min(1)]).transform((p) => (Array.isArray(p) ? p : [p])),
   cooldownMs: z.number().int().nonnegative().optional(),
   /** Gesture rules: a separate cooldown per hand (two fists at once fire twice). */
-  perHand: z.boolean().default(false)
+  perHand: z.boolean().default(false),
+  /**
+   * Word rules: "partial" fires from Vosk's partial result (fast, ~0–300 ms after the word); "final" waits
+   * for the final result (~0.5–1 s after you stop talking) and needs `minConfidence`, so speech that only
+   * briefly looked like the word never fires it.
+   */
+  confirm: z.enum(['partial', 'final']).default('partial'),
+  /** Word rules with `confirm: "final"`: the lowest per-word confidence (0–1) that still fires. */
+  minConfidence: z.number().min(0).max(1).default(0.9)
+})
+
+/** Sending your voice + effect sounds into a call through a virtual device (docs/audio-setup.md). */
+const Call = z.object({
+  /** Send the mix to `device`. The Control window's switch overrides it until this value changes. */
+  enabled: z.boolean().default(true),
+  /** The virtual device's output, by part of its name. Missing = no call audio, effects play locally. */
+  device: z.string().min(1).default('BlackHole'),
+  /** Your voice's level in the mix (1 = unchanged). */
+  micVolume: z.number().min(0).max(2).default(1),
+  /** While sending: hear the effect sounds yourself, on `audio.device` (never your own voice). */
+  monitor: z.boolean().default(true),
+  monitorVolume: Volume.default(0.3)
 })
 
 const Audio = z.object({
   /** Master volume for every effect sound. */
   volume: Volume.default(1),
   muted: z.boolean().default(false),
-  /** Output device: part of its name (e.g. "BlackHole", "MacBook Air Speakers"). Default: the system output. */
-  device: z.string().min(1).optional()
+  /** Your local output (and the monitor while sending to a call): part of its name. Default: the system output. */
+  device: z.string().min(1).optional(),
+  call: Call.prefault({})
+})
+
+/**
+ * Clap = hands meeting fast (camera) AND a clap-like sound on the raw mic, within `windowMs`.
+ * The sound thresholds are shown live in the Control window for tuning (see audio/clapOnset.ts).
+ */
+const Clap = z.object({
+  windowMs: z.number().int().min(20).max(500).default(150),
+  /** false = the camera alone fires Clap (no sound needed). */
+  requireSound: z.boolean().default(true),
+  /** Bright band (above 2 kHz) rising this many dB over the previous ~30 ms, within ~3 ms. */
+  minRiseDb: z.number().min(3).max(60).default(15),
+  /** Bright-band peak, dBFS. Raise it if soft touches count; lower it if real claps don't. */
+  minLevelDb: z.number().min(-90).max(0).default(-38),
+  /** Share of the peak's energy above 2 kHz (voice is mostly below). */
+  minBrightness: z.number().min(0).max(1).default(0.3),
+  /** The sound must fall `decayDb` below its peak within this long. */
+  maxDurationMs: z.number().int().min(10).max(500).default(80),
+  decayDb: z.number().min(3).max(40).default(12)
+})
+
+const Speech = z.object({
+  /**
+   * Add decoy words (common English, plus words that sound like each trigger) to the recognizer's
+   * grammar, so ordinary speech lands on them instead of on the nearest trigger word.
+   */
+  decoys: z.boolean().default(true)
 })
 
 const Performance = z.object({
@@ -211,6 +260,8 @@ export const ConfigSchema = z
     performance: Performance.prefault({}),
     video: Video.prefault({}),
     audio: Audio.prefault({}),
+    speech: Speech.prefault({}),
+    clap: Clap.prefault({}),
     defaultCooldownMs: z.number().int().nonnegative().default(2000),
     words: z.array(z.string().min(1)).min(1),
     rules: z.array(Rule),

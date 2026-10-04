@@ -227,8 +227,9 @@ function palmGap(a: HandGeometry, b: HandGeometry, aspect: number): number {
 }
 
 /**
- * Clap: palms closing fast, then meeting (or merging into one detection, as MediaPipe often loses
- * one hand at contact). Fires once per contact. Distinct from Pray, which needs the hands still.
+ * Clap contact: palms closing fast, then meeting (or merging into one detection, as MediaPipe often
+ * loses one hand at contact). Once per contact. Distinct from Pray, which needs the hands still.
+ * This is only the camera's half of a clap; see ClapFusion.
  */
 export class ClapDetector {
   private lastGap: number | null = null
@@ -334,6 +335,11 @@ export interface GestureUpdate {
   events: GestureEvent[]
   /** Gestures that fired earlier and are still held (a word can complete a combo with them). */
   active: GestureEvent[]
+  /**
+   * Hands met fast on this result (screen position). Not a Clap yet: ClapFusion fires Clap only
+   * when the mic heard a clap-like sound at the same moment.
+   */
+  clapContact: Point | null
   /** A gesture is about to fire (pending hold or a fast clap approach): track every frame for a moment. */
   burst: boolean
 }
@@ -402,6 +408,7 @@ export class GestureTracker {
     // Two-hand gestures. They decide what the single-hand labels may still mean.
     let bothUp = false
     let praying = false
+    let clapContact: Point | null = null
     const [ga, gb] = geometries
     if (ga && gb) {
       const s = (ga.scale + gb.scale) / 2
@@ -410,7 +417,7 @@ export class GestureTracker {
       const clapAt = this.clap.update(gap, midpoint, at)
       if (clapAt) {
         this.lastClapAt = at
-        mark('Clap:Both', toScreen(this.view, clapAt))
+        clapContact = toScreen(this.view, clapAt)
       }
       const speed = this.still.update(midpoint, s, this.aspect, at)
       praying = isPrayPose(ga, gb)
@@ -426,7 +433,7 @@ export class GestureTracker {
       const clapAt = this.clap.update(null, null, at)
       if (clapAt) {
         this.lastClapAt = at
-        mark('Clap:Both', toScreen(this.view, clapAt))
+        clapContact = toScreen(this.view, clapAt)
       }
       this.still.update(null, 1, this.aspect, at)
     }
@@ -447,6 +454,6 @@ export class GestureTracker {
     const events = fired.map((key) => event(key, true))
     const active: GestureEvent[] = []
     for (const key of present) if (this.stabilizer.isActive(key) && !fired.includes(key)) active.push(event(key, false))
-    return { hands, events, active, burst: this.stabilizer.pending || this.clap.approaching(at) }
+    return { hands, events, active, clapContact, burst: this.stabilizer.pending || this.clap.approaching(at) }
   }
 }

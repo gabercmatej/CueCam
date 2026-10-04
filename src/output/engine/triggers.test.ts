@@ -5,7 +5,15 @@ import { RELEASE_MARGIN_MS, TriggerEngine } from './triggers'
 
 const g = (gesture: GestureName, at: number, x = 100): GestureEvent => ({ type: 'gesture', gesture, hand: 'Right', position: { x, y: 200 }, at })
 const w = (word: string, at: number): WordEvent => ({ type: 'word', word, confidence: 1, partial: true, at })
-const rule = (when: RuleConfig['when'], play: string[], cooldownMs?: number, perHand = false): RuleConfig => ({ when, play, cooldownMs, perHand })
+const final = (word: string, at: number, confidence = 1, seenInPartial = false): WordEvent => ({ type: 'word', word, confidence, partial: false, seenInPartial, at })
+const rule = (when: RuleConfig['when'], play: string[], cooldownMs?: number, perHand = false): RuleConfig => ({
+  when,
+  play,
+  cooldownMs,
+  perHand,
+  confirm: 'partial',
+  minConfidence: 0.9
+})
 
 function engine(rules: RuleConfig[], cooldown = 2000) {
   const e = new TriggerEngine()
@@ -217,5 +225,65 @@ describe('TriggerEngine', () => {
     e.handle(g('OpenPalm', 250))
     e.handle({ ...g('BothHandsUp', 650), hand: 'Both' })
     expect(e.handle(w('fire', 1000))).toEqual([])
+  })
+
+  describe('word confirm modes', () => {
+    it('"partial" rules fire on the partial and ignore the final of the same occurrence', () => {
+      const e = engine([rule({ word: 'boom' }, ['a'], 0)])
+      expect(e.handle(w('boom', 0))).toHaveLength(1)
+      expect(e.handle(final('boom', 800, 1, true))).toHaveLength(0)
+    })
+
+    it('"partial" rules still fire on a final occurrence no partial saw', () => {
+      const e = engine([rule({ word: 'boom' }, ['a'], 0)])
+      expect(e.handle(final('boom', 800, 0.5, false))).toHaveLength(1)
+    })
+
+    it('"final" rules ignore partials and fire on a confident final, even one a partial saw', () => {
+      const e = engine([{ ...rule({ word: "let's go" }, ['a'], 0), confirm: 'final', minConfidence: 0.9 }])
+      expect(e.handle(w("let's go", 0))).toHaveLength(0)
+      expect(e.handle(final("let's go", 800, 0.95, true))).toHaveLength(1)
+    })
+
+    it('"final" rules reject finals below minConfidence', () => {
+      const e = engine([{ ...rule({ word: "let's go" }, ['a'], 0), confirm: 'final', minConfidence: 0.9 }])
+      expect(e.handle(final("let's go", 800, 0.7))).toHaveLength(0)
+    })
+
+    it('a word used by a partial rule and a final rule fires each once', () => {
+      const e = engine([rule({ word: 'boom' }, ['fast'], 0), { ...rule({ word: 'boom' }, ['slow'], 0), confirm: 'final' }])
+      expect(e.handle(w('boom', 0)).map((f) => f.effects[0])).toEqual(['fast'])
+      expect(e.handle(final('boom', 800, 1, true)).map((f) => f.effects[0])).toEqual(['slow'])
+    })
+
+    it('a "final" combo word completes the combo only from a confident final', () => {
+      const combo = { ...rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['fireball'], 0), confirm: 'final' as const }
+      const e = engine([combo])
+      e.handle(g('OpenPalm', 0))
+      expect(e.handle(w('fire', 100))).toHaveLength(0)
+      expect(e.handle(final('fire', 900, 0.95, true))).toHaveLength(1)
+    })
+
+    it('a "final" combo cancels a "partial" solo on the same word (the solo is held for it)', () => {
+      const e = engine([{ ...rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['combo'], 0), confirm: 'final' }, rule({ word: 'fire' }, ['solo'], 0)])
+      e.setActive([g('OpenPalm', 0)])
+      expect(e.handle(w('fire', 100))).toEqual([])
+      expect(e.handle(final('fire', 900, 1, true)).map((f) => f.effects[0])).toEqual(['combo'])
+      expect(e.tick(100 + 1500 + RELEASE_MARGIN_MS + 1)).toEqual([])
+    })
+
+    it('a "partial" combo cancels a "final" solo on the same word (the final of that occurrence is spent)', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['combo'], 0), { ...rule({ word: 'fire' }, ['solo'], 0), confirm: 'final' }])
+      e.setActive([g('OpenPalm', 0)])
+      expect(e.handle(w('fire', 100)).map((f) => f.effects[0])).toEqual(['combo'])
+      expect(e.handle(final('fire', 900, 1, true))).toEqual([])
+    })
+
+    it('without the gesture, a held "partial" solo still fires once the combo window passes', () => {
+      const e = engine([{ ...rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['combo'], 0), confirm: 'final' }, rule({ word: 'fire' }, ['solo'], 0)])
+      expect(e.handle(w('fire', 100))).toEqual([])
+      expect(e.handle(final('fire', 900, 1, true))).toEqual([])
+      expect(e.tick(100 + 1500 + RELEASE_MARGIN_MS).map((f) => f.effects[0])).toEqual(['solo'])
+    })
   })
 })

@@ -33,6 +33,8 @@ export class SpeechInput {
   /** Chunks sent to / skipped from Vosk since the last stats read. */
   private fed = 0
   private skipped = 0
+  /** Dev: a recording is being fed instead of the mic (see feed). */
+  private feeding = false
 
   private constructor(
     private readonly model: Model,
@@ -62,7 +64,9 @@ export class SpeechInput {
         processorOptions: { chunkSize: Math.round(ctx.sampleRate / 10) } satisfies MicCaptureOptions // ~100 ms
       })
       const input = new SpeechInput(model, stream, ctx, events)
-      node.port.onmessage = (e: MessageEvent<Float32Array>) => input.onChunk(e.data)
+      node.port.onmessage = (e: MessageEvent<Float32Array>) => {
+        if (!input.feeding) input.onChunk(e.data)
+      }
       ctx.createMediaStreamSource(stream).connect(node)
       return input
     } catch (err) {
@@ -74,11 +78,15 @@ export class SpeechInput {
     }
   }
 
-  /** Restricts recognition to these words/phrases (plus [unk]). Safe to call again on config reload. */
-  setWords(words: string[]): void {
+  /**
+   * Restricts recognition to these words/phrases, plus decoys and [unk] (see decoys.ts); only the
+   * words are ever reported. Safe to call again on config reload.
+   */
+  setWords(words: string[], decoys: readonly string[] = []): void {
     this.listener?.recognizer.remove()
     const spotter = new WordSpotter(words)
-    const recognizer = new this.model.KaldiRecognizer(SAMPLE_RATE, buildGrammar(spotter.words))
+    const grammar = buildGrammar(spotter.words, decoys)
+    const recognizer = new this.model.KaldiRecognizer(SAMPLE_RATE, grammar)
     recognizer.setWords(true)
     const listener: Listener = { recognizer, spotter, clock: new AudioClock(SAMPLE_RATE) }
 
@@ -95,7 +103,7 @@ export class SpeechInput {
     })
 
     this.listener = listener
-    console.log(`[speech] listening for ${buildGrammar(spotter.words)}`)
+    console.log(`[speech] listening for ${JSON.stringify(spotter.words)} + ${decoys.length} decoys`)
   }
 
   stop(): void {
@@ -112,6 +120,26 @@ export class SpeechInput {
     const share = total ? this.fed / total : 1
     this.fed = this.skipped = 0
     return share
+  }
+
+  /**
+   * Dev: replaces the mic with a 16 kHz mono recording, fed in ~100 ms chunks at `speed`× real time,
+   * then 2 s of silence so the last utterance closes. Silent: nothing is played.
+   */
+  async feed(samples: Float32Array, speed = 4): Promise<void> {
+    this.feeding = true
+    const size = SAMPLE_RATE / 10
+    const silence = new Float32Array(SAMPLE_RATE * 2)
+    const all = new Float32Array(samples.length + silence.length)
+    all.set(samples)
+    try {
+      for (let i = 0; i < all.length; i += size) {
+        this.onChunk(all.slice(i, i + size))
+        await new Promise((r) => setTimeout(r, 100 / speed))
+      }
+    } finally {
+      this.feeding = false
+    }
   }
 
   private onChunk(chunk: Float32Array): void {
