@@ -13,7 +13,13 @@ export const GESTURES = [
   'FingerGun',
   'Pinch',
   'PalmPush',
-  'Heart'
+  'Heart',
+  /** Both palms pressed together, fingers up, held still. */
+  'Pray',
+  /** Two hands meeting fast. Fires on contact. */
+  'Clap',
+  /** Two open palms, apart. While it holds, neither hand counts as OpenPalm. */
+  'BothHandsUp'
 ] as const
 export type GestureName = (typeof GESTURES)[number]
 
@@ -30,7 +36,10 @@ export interface GestureEvent {
   gesture: GestureName
   hand: HandSide | 'Both'
   position: Point
+  /** Camera frame time of the result that completed the hold. */
   at: number
+  /** Camera frame time the gesture was first seen (start of the hold), for latency measurement. */
+  heldFrom?: number
 }
 
 export interface WordEvent {
@@ -48,6 +57,8 @@ export type TriggerEvent = GestureEvent | WordEvent
 export interface EffectContext {
   /** Where the triggering gesture happened, if any. */
   position?: Point
+  /** Which hand made the triggering gesture, if one did (effects that follow a hand track this one). */
+  hand?: HandSide | 'Both'
   /** Palm centers of the hands currently visible, in screen space. */
   hands: Point[]
   /** The face box in screen space (held for a moment while the face is covered), if known. */

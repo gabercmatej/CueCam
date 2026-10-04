@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain, net, powerSaveBlocker, protocol, screen, s
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
 import { ConfigState } from './configState'
+import { insideRoot, resolveMedia } from './media'
 
 /** Output size in real pixels for `video.outputHeight` (16:9). */
 const outputPixels = (height: 1080 | 720): { width: number; height: number } => ({ width: (height * 16) / 9, height })
@@ -20,8 +21,9 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 const ROOT = app.getAppPath()
 const CONFIG_FILE = join(ROOT, 'skillcam.config.json')
 const CLIPS_DIR = join(ROOT, 'effects', 'clips')
+const REACTIONS_DIR = join(ROOT, 'reactions')
 
-// skillcam://clips/<file> serves effects/clips/ to the renderer in dev and packaged builds alike.
+// skillcam://clips/<file> serves effects/clips/, skillcam://media/<path> serves reactions/, in dev and packaged builds alike.
 protocol.registerSchemesAsPrivileged([
   { scheme: 'skillcam', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }
 ])
@@ -36,11 +38,12 @@ async function requestMediaAccess(): Promise<void> {
 }
 
 function lockDownSession(): void {
-  // Only camera/mic are ever needed. Everything else is denied.
+  // Only camera/mic and choosing the effect-audio output device (setSinkId) are needed. Everything else is denied.
+  const allowed = (permission: string): boolean => permission === 'media' || permission === 'speaker-selection'
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(permission === 'media')
+    callback(allowed(permission))
   })
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media')
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed(permission))
 
   // No network, ever (BUILD_PLAN §13). Backs up the CSP; MediaPipe tries to phone home for telemetry.
   // In dev, the Vite server on localhost is the only allowed origin.
@@ -53,14 +56,22 @@ function lockDownSession(): void {
   })
 }
 
-function serveClips(): void {
+function fileFor(url: URL): string | null {
+  let name: string
+  try {
+    name = decodeURIComponent(url.pathname.slice(1))
+  } catch {
+    return null
+  }
+  if (url.hostname === 'media') return insideRoot(REACTIONS_DIR, name)
+  const file = resolve(CLIPS_DIR, name)
+  return url.hostname === 'clips' && /^\w[\w.-]*$/.test(name) && file.startsWith(CLIPS_DIR + sep) ? file : null
+}
+
+function serveMedia(): void {
   protocol.handle('skillcam', async (request) => {
-    const url = new URL(request.url)
-    const name = decodeURIComponent(url.pathname.slice(1))
-    const file = resolve(CLIPS_DIR, name)
-    if (url.hostname !== 'clips' || !/^\w[\w.-]*$/.test(name) || !file.startsWith(CLIPS_DIR + sep)) {
-      return new Response('Not found', { status: 404 })
-    }
+    const file = fileFor(new URL(request.url))
+    if (!file) return new Response('Not found', { status: 404 })
     try {
       const res = await net.fetch(pathToFileURL(file).toString(), { headers: request.headers })
       // Clips are drawn into WebGL, which refuses cross-origin video unless CORS allows it.
@@ -117,7 +128,8 @@ function createOutputWindow(px: { width: number; height: number }): BrowserWindo
     roundedCorners: false,
     backgroundColor: '#000000',
     show: false,
-    webPreferences: { preload: join(import.meta.dirname, '../preload/index.cjs'), ...SECURE_PREFERENCES }
+    // Effect sounds play without a click in the window (it is never clicked: OBS captures it).
+    webPreferences: { preload: join(import.meta.dirname, '../preload/index.cjs'), ...SECURE_PREFERENCES, autoplayPolicy: 'no-user-gesture-required' }
   })
 
   // Moved to a display with another scale factor (e.g. Retina laptop ↔ 1× monitor): keep the real pixel count.
@@ -190,7 +202,10 @@ function logConfig(result: ConfigResult): void {
 
 void app.whenReady().then(async () => {
   lockDownSession()
-  serveClips()
+  serveMedia()
+  ipcMain.handle('media:resolve', (_event, entries: unknown) =>
+    resolveMedia(REACTIONS_DIR, Array.isArray(entries) ? entries.filter((e): e is string => typeof e === 'string') : [])
+  )
 
   const config = new ConfigState()
   const initial = loadConfig(CONFIG_FILE)

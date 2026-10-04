@@ -123,3 +123,27 @@ describe('TaskScheduler (several tasks share one worker)', () => {
     expect(log.filter((l) => l.includes('segment')).length).toBe(4)
   })
 })
+
+describe('TaskScheduler burst', () => {
+  it('tracks hands on every frame while bursting, then returns to the stride', () => {
+    const s = new TaskScheduler({ hands: 2, segment: 0, face: 0 })
+    const sent: number[] = []
+    for (let f = 0; f < 12; f++) {
+      if (f === 3) s.burst(6.5)
+      if (s.offer(f)) {
+        sent.push(f)
+        s.done(f)
+      }
+    }
+    expect(sent).toEqual([0, 2, 3, 4, 5, 6, 8, 10])
+  })
+
+  it('still skips while the worker is busy (a burst never queues)', () => {
+    const s = new TaskScheduler({ hands: 2, segment: 0, face: 0 })
+    s.burst(100)
+    expect(s.offer(0)).toBe(true)
+    expect(s.offer(1)).toBe(false)
+    s.done(0)
+    expect(s.offer(2)).toBe(true)
+  })
+})

@@ -5,7 +5,7 @@ import { RELEASE_MARGIN_MS, TriggerEngine } from './triggers'
 
 const g = (gesture: GestureName, at: number, x = 100): GestureEvent => ({ type: 'gesture', gesture, hand: 'Right', position: { x, y: 200 }, at })
 const w = (word: string, at: number): WordEvent => ({ type: 'word', word, confidence: 1, partial: true, at })
-const rule = (when: RuleConfig['when'], play: string[], cooldownMs?: number): RuleConfig => ({ when, play, cooldownMs })
+const rule = (when: RuleConfig['when'], play: string[], cooldownMs?: number, perHand = false): RuleConfig => ({ when, play, cooldownMs, perHand })
 
 function engine(rules: RuleConfig[], cooldown = 2000) {
   const e = new TriggerEngine()
@@ -16,7 +16,7 @@ function engine(rules: RuleConfig[], cooldown = 2000) {
 describe('TriggerEngine', () => {
   it('fires a single gesture rule with the gesture position', () => {
     const e = engine([rule({ gesture: 'ThumbUp' }, ['confetti'])])
-    expect(e.handle(g('ThumbUp', 0))).toEqual([{ rule: 0, effects: ['confetti'], position: { x: 100, y: 200 } }])
+    expect(e.handle(g('ThumbUp', 0))).toEqual([{ rule: 0, effects: ['confetti'], position: { x: 100, y: 200 }, hand: 'Right' }])
     expect(e.handle(g('Fist', 10))).toEqual([])
   })
 
@@ -39,11 +39,11 @@ describe('TriggerEngine', () => {
     const combo = rule({ word: 'fire', gesture: 'PalmPush', withinMs: 1500 }, ['fireball'])
     const a = engine([combo])
     expect(a.handle(w('fire', 0))).toEqual([])
-    expect(a.handle(g('PalmPush', 1200, 300))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 } }])
+    expect(a.handle(g('PalmPush', 1200, 300))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 }, hand: 'Right' }])
 
     const b = engine([combo])
     b.handle(g('PalmPush', 0, 300))
-    expect(b.handle(w('fire', 900))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 } }])
+    expect(b.handle(w('fire', 900))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 }, hand: 'Right' }])
   })
 
   it('does not fire a combo outside the window', () => {
@@ -92,7 +92,7 @@ describe('TriggerEngine', () => {
       expect(e.handle(w('fire', 0))).toEqual([])
       expect(e.tick(1000)).toEqual([])
       // The gesture completes the combo: neither the held word solo nor the gesture solo fires.
-      expect(e.handle(g('PalmPush', 1200, 300))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 } }])
+      expect(e.handle(g('PalmPush', 1200, 300))).toEqual([{ rule: 0, effects: ['fireball'], position: { x: 300, y: 200 }, hand: 'Right' }])
       expect(e.tick(5000)).toEqual([])
     })
 
@@ -177,5 +177,45 @@ describe('TriggerEngine', () => {
       expect(e.handle(w('fire', 900)).map((f) => f.rule)).toEqual([1])
       expect(e.handle(g('PalmPush', 1200)).map((f) => f.rule)).toEqual([])
     })
+  })
+
+  describe('per hand and held gestures', () => {
+    const left = (gesture: GestureName, at: number): GestureEvent => ({ ...g(gesture, at), hand: 'Left', position: { x: 900, y: 200 } })
+
+    it('perHand rules fire once per hand at the same moment (two fists, two bursts)', () => {
+      const e = engine([rule({ gesture: 'Fist' }, ['confetti'], 1000, true)])
+      expect(e.handle(g('Fist', 0))).toHaveLength(1)
+      expect(e.handle(left('Fist', 0))).toEqual([{ rule: 0, effects: ['confetti'], position: { x: 900, y: 200 }, hand: 'Left' }])
+      // Each hand still has its own cooldown.
+      expect(e.handle(g('Fist', 500))).toEqual([])
+      expect(e.handle(g('Fist', 1000))).toHaveLength(1)
+    })
+
+    it('without perHand the second hand is in cooldown', () => {
+      const e = engine([rule({ gesture: 'Fist' }, ['confetti'], 1000)])
+      e.handle(g('Fist', 0))
+      expect(e.handle(left('Fist', 0))).toEqual([])
+    })
+
+    it('a gesture still held completes a combo with a word long after it fired', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['fire_palm'])])
+      e.handle(g('OpenPalm', 0))
+      e.setActive([g('OpenPalm', 3000)])
+      expect(e.handle(w('fire', 3000))).toEqual([{ rule: 0, effects: ['fire_palm'], position: { x: 100, y: 200 }, hand: 'Right' }])
+    })
+
+    it('a gesture that is no longer held does not', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['fire_palm'])])
+      e.handle(g('OpenPalm', 0))
+      e.setActive([])
+      expect(e.handle(w('fire', 3000))).toEqual([])
+    })
+  })
+
+  it('BothHandsUp stops an earlier one-hand OpenPalm from completing the fire combo', () => {
+    const e = engine([rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['fire_palm'])])
+    e.handle(g('OpenPalm', 250))
+    e.handle({ ...g('BothHandsUp', 650), hand: 'Both' })
+    expect(e.handle(w('fire', 1000))).toEqual([])
   })
 })

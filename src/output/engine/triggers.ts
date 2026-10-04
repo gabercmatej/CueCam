@@ -6,9 +6,13 @@
  * that could start a combo holds its solo rules until the combo fires (cancelled) or the
  * combo's window passes (released by `tick`). Gestures are never held: a solo gesture rule
  * fires at once, so the common case stays instant.
+ *
+ * A gesture that is still being held completes a combo with a word at any time (open palm held,
+ * then "fire" three seconds later), not just within `withinMs` of when it fired.
+ * `perHand` rules keep a cooldown per hand: two fists at once fire twice.
  */
 import type { RuleConfig } from '../../shared/config'
-import type { GestureEvent, Point, TriggerEvent, WordEvent } from '../../shared/types'
+import type { GestureEvent, HandSide, Point, TriggerEvent, WordEvent } from '../../shared/types'
 
 export interface Firing {
   /** Index of the rule in config.rules. */
@@ -16,6 +20,8 @@ export interface Firing {
   effects: string[]
   /** Where the gesture behind this firing happened (absent for word-only rules). */
   position?: Point
+  /** Which hand made that gesture. */
+  hand?: HandSide | 'Both'
 }
 
 /** Events older than this can never complete a combo. */
@@ -46,7 +52,10 @@ export class TriggerEngine {
   private _armed = true
   private rules: RuleConfig[] = []
   private defaultCooldownMs = 2000
-  private lastFired = new Map<number, number>()
+  /** Last firing per cooldown key: the rule index, plus the hand for `perHand` rules. */
+  private lastFired = new Map<string, number>()
+  /** Gestures fired earlier and still held (from the gesture tracker, per tracking result). */
+  private active: readonly GestureEvent[] = []
   /** Recent unconsumed events that could complete a combo. */
   private recent: TriggerEvent[] = []
   private held: HeldSolo[] = []
@@ -67,6 +76,11 @@ export class TriggerEngine {
     this.reset()
   }
 
+  /** The gestures currently held (fired earlier, still present). */
+  setActive(active: readonly GestureEvent[]): void {
+    this.active = active
+  }
+
   /** Fires held solo rules whose combo window has passed. Call every frame. */
   tick(now: number): readonly Firing[] {
     if (this.held.length === 0) return NONE
@@ -77,7 +91,7 @@ export class TriggerEngine {
       this.recent = this.recent.filter((r) => r !== h.event)
       for (const i of h.rules) {
         const rule = this.rules[i]!
-        if (this.ready(i, rule, now)) firings.push(this.fire(i, rule, now, undefined))
+        if (this.ready(i, rule, now)) firings.push(this.fire(i, rule, now))
       }
       return false
     })
@@ -87,38 +101,42 @@ export class TriggerEngine {
   handle(e: TriggerEvent): Firing[] {
     if (!this._armed) return []
     this.recent = this.recent.filter((r) => e.at - r.at <= MAX_COMBO_WINDOW_MS)
+    // Two raised palms are BothHandsUp: an OpenPalm from the first hand going up mustn't complete a combo.
+    if (e.type === 'gesture' && e.gesture === 'BothHandsUp') this.recent = this.recent.filter((r) => !(r.type === 'gesture' && r.gesture === 'OpenPalm'))
 
     const firings: Firing[] = []
     let consumed = false
     this.rules.forEach((rule, i) => {
       const { gesture, word, withinMs = 1500 } = rule.when
-      if (!this.ready(i, rule, e.at)) return
-
       if (gesture && word) {
         if (consumed) return
         const wantPartner = e.type === 'gesture' ? { word } : { gesture }
         if (!matches(e.type === 'gesture' ? { gesture } : { word }, e)) return
-        const partner = [...this.recent].reverse().find((r) => matches(wantPartner, r) && Math.abs(e.at - r.at) <= withinMs)
+        const partner =
+          [...this.recent].reverse().find((r) => matches(wantPartner, r) && Math.abs(e.at - r.at) <= withinMs) ??
+          (e.type === 'word' ? this.active.find((a) => matches(wantPartner, a)) : undefined)
         if (!partner) return
+        const g = (e.type === 'gesture' ? e : partner) as GestureEvent
+        if (!this.ready(i, rule, e.at, g.hand)) return
         this.recent = this.recent.filter((r) => r !== partner)
         // Held solo rules for this word are cancelled (all of them: "fire fire" holds twice).
         this.held = this.held.filter((h) => !matches({ word }, h.event))
         consumed = true
-        const g = (e.type === 'gesture' ? e : partner) as GestureEvent
-        firings.push(this.fire(i, rule, e.at, g.position))
+        firings.push(this.fire(i, rule, e.at, g))
       }
     })
     // The event that completed a combo fires no solo rule.
     if (consumed) return firings
 
+    const hand = e.type === 'gesture' ? e.hand : undefined
     const solos = this.rules.flatMap((rule, i) =>
-      !(rule.when.gesture && rule.when.word) && matches(rule.when, e) && this.ready(i, rule, e.at) ? [i] : []
+      !(rule.when.gesture && rule.when.word) && matches(rule.when, e) && this.ready(i, rule, e.at, hand) ? [i] : []
     )
     const holdMs = e.type === 'word' ? this.comboWindowFor(e) : 0
     if (e.type === 'word' && holdMs > 0 && solos.length > 0) {
       this.held.push({ event: e, rules: solos, releaseAt: e.at + holdMs + RELEASE_MARGIN_MS })
     } else {
-      for (const i of solos) firings.push(this.fire(i, this.rules[i]!, e.at, e.type === 'gesture' ? e.position : undefined))
+      for (const i of solos) firings.push(this.fire(i, this.rules[i]!, e.at, e.type === 'gesture' ? e : undefined))
     }
     // A word fires either its solo rules or a combo, never both. Gestures fire their solo at
     // once and can still complete a combo with a word that follows.
@@ -141,13 +159,17 @@ export class TriggerEngine {
     this.held = []
   }
 
-  private ready(i: number, rule: RuleConfig, at: number): boolean {
-    const last = this.lastFired.get(i)
+  private cooldownKey(i: number, rule: RuleConfig, hand: HandSide | 'Both' | undefined): string {
+    return rule.perHand && hand ? `${i}:${hand}` : `${i}`
+  }
+
+  private ready(i: number, rule: RuleConfig, at: number, hand?: HandSide | 'Both'): boolean {
+    const last = this.lastFired.get(this.cooldownKey(i, rule, hand))
     return last === undefined || at - last >= (rule.cooldownMs ?? this.defaultCooldownMs)
   }
 
-  private fire(i: number, rule: RuleConfig, at: number, position: Point | undefined): Firing {
-    this.lastFired.set(i, at)
-    return position ? { rule: i, effects: rule.play, position } : { rule: i, effects: rule.play }
+  private fire(i: number, rule: RuleConfig, at: number, gesture?: GestureEvent): Firing {
+    this.lastFired.set(this.cooldownKey(i, rule, gesture?.hand), at)
+    return gesture ? { rule: i, effects: rule.play, position: gesture.position, hand: gesture.hand } : { rule: i, effects: rule.play }
   }
 }

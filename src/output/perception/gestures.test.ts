@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { makeHand, POSES } from './__fixtures__/hands'
 import { analyzeHand, type Landmark } from './handGeometry'
-import { assignSides, classifyHand, detectHeart, GestureTracker, PalmPushDetector, PinchLatch, Stabilizer, type RawHand } from './gestures'
+import { assignSides, ClapDetector, classifyHand, detectHeart, GestureTracker, isPrayPose, PalmPushDetector, PinchLatch, samplesFor, Stabilizer, type RawHand } from './gestures'
 import type { View } from '../view'
 
 const ASPECT = 16 / 9
@@ -49,14 +49,46 @@ describe('Stabilizer', () => {
   /** One sample per `stride` camera frames at 30 fps, starting at frame `from`. */
   const run = (s: Stabilizer, frames: string[][], stride = 1, from = 0) =>
     frames.map((f, i) => s.update(new Set(f), (from + i * stride) * FRAME))
+  const firedAt = (s: Stabilizer, stride: number) => {
+    const fired = run(s, Array.from({ length: 12 }, () => ['a']), stride)
+    const i = fired.findIndex((f) => f.length > 0)
+    return Math.round(i * stride * FRAME)
+  }
 
-  it('fires once after 5 consecutive frames', () => {
-    const fired = run(new Stabilizer(), [['a'], ['a'], ['a'], ['a'], ['a'], ['a'], ['a']])
-    expect(fired.map((f) => f.length)).toEqual([0, 0, 0, 0, 1, 0, 0])
+  it('fires once after the 100 ms hold (every frame: the 4th sample)', () => {
+    const fired = run(new Stabilizer(100), [['a'], ['a'], ['a'], ['a'], ['a'], ['a']])
+    expect(fired.map((f) => f.length)).toEqual([0, 0, 0, 1, 0, 0])
   })
 
-  it('needs at least 3 detections even when samples are far apart (stride 4 under load)', () => {
-    expect(run(new Stabilizer(), [['a'], ['a'], ['a']], 4).map((f) => f.length)).toEqual([0, 0, 1])
+  it('holds for time, not samples: 100 ms every frame, 133 ms at stride 2 (no burst), 200 ms at stride 3/4', () => {
+    expect(firedAt(new Stabilizer(100), 1)).toBe(100)
+    expect(firedAt(new Stabilizer(100), 2)).toBe(133)
+    expect(firedAt(new Stabilizer(100), 3)).toBe(200)
+    // Stride 4: 133 ms already passed at the 2nd sample, but a hold needs 3 detections.
+    expect(firedAt(new Stabilizer(100), 4)).toBe(267)
+  })
+
+  it('a 66 ms hold (Fist) fires on the 3rd frame; a 0 ms hold on the first detection', () => {
+    expect(firedAt(new Stabilizer(66), 1)).toBe(67)
+    expect(new Stabilizer(0).update(new Set(['a']), 0)).toEqual(['a'])
+  })
+
+  it('needs at most 3 detections however long the hold', () => {
+    expect(samplesFor(500)).toBe(3)
+    expect(samplesFor(66)).toBe(3)
+    expect(samplesFor(33)).toBe(2)
+    expect(samplesFor(0)).toBe(1)
+    expect(firedAt(new Stabilizer(500), 6)).toBe(600)
+  })
+
+  it('reports a pending hold (for burst tracking) until the key fires', () => {
+    const s = new Stabilizer(100)
+    s.update(new Set(['a']), 0)
+    expect(s.pending).toBe(true)
+    run(s, [['a'], ['a'], ['a']], 1, 1)
+    expect(s.pending).toBe(false)
+    expect(s.isActive('a')).toBe(true)
+    expect(s.startedAt('a')).toBe(0)
   })
 
   it('does not treat a gap in tracking as the gesture being held', () => {
@@ -66,36 +98,22 @@ describe('Stabilizer', () => {
     expect(s.update(new Set(['a']), 1033)).toEqual([])
   })
 
-  it('takes the same time to fire when tracking runs every 2nd or 3rd frame', () => {
-    // 5 frames at 30 fps ≈ 133 ms: 3 samples at stride 2, 2 samples at stride 3 (0 → 100 → 200 ms).
-    expect(run(new Stabilizer(), [['a'], ['a'], ['a'], ['a']], 2).map((f) => f.length)).toEqual([0, 0, 1, 0])
-    expect(run(new Stabilizer(), [['a'], ['a'], ['a']], 3).map((f) => f.length)).toEqual([0, 0, 1])
-    // …and at stride 3 that is also the 3-detection minimum.
-  })
-
-  it('restarts the hold count if the gesture flickers out', () => {
-    const fired = run(new Stabilizer(), [['a'], ['a'], ['a'], ['a'], [], ['a'], ['a'], ['a'], ['a']])
+  it('restarts the hold if the gesture flickers out', () => {
+    const fired = run(new Stabilizer(100), [['a'], ['a'], ['a'], [], ['a'], ['a'], ['a']])
     expect(fired.flat()).toEqual([])
   })
 
-  it('needs 10 frames of absence before it can fire again', () => {
-    const s = new Stabilizer()
-    run(s, Array.from({ length: 5 }, () => ['a']))
-    expect(run(s, [...Array.from({ length: 9 }, () => []), ...Array.from({ length: 5 }, () => ['a'])], 1, 5).flat()).toEqual([])
-    run(s, Array.from({ length: 10 }, () => []), 1, 19)
-    expect(run(s, Array.from({ length: 5 }, () => ['a']), 1, 29).flat()).toEqual(['a'])
-  })
-
-  it('measures absence in time, not samples, at a tracking stride', () => {
-    const s = new Stabilizer()
-    run(s, [['a'], ['a'], ['a']], 2)
-    // 5 empty samples at stride 2 = 10 frames of absence.
-    run(s, Array.from({ length: 5 }, () => []), 2, 6)
-    expect(run(s, [['a'], ['a'], ['a']], 2, 16).flat()).toEqual(['a'])
+  it('needs 330 ms of absence before it can fire again', () => {
+    const s = new Stabilizer(100, 330)
+    run(s, Array.from({ length: 4 }, () => ['a']))
+    // 9 empty frames (300 ms): still latched.
+    expect(run(s, [...Array.from({ length: 9 }, () => []), ...Array.from({ length: 4 }, () => ['a'])], 1, 4).flat()).toEqual([])
+    run(s, Array.from({ length: 10 }, () => []), 1, 17)
+    expect(run(s, Array.from({ length: 4 }, () => ['a']), 1, 27).flat()).toEqual(['a'])
   })
 
   it('supports a per-key hold', () => {
-    const s = new Stabilizer(5, 10, (k) => (k.startsWith('PalmPush') ? 1 : 5))
+    const s = new Stabilizer(100, 330, (k) => (k.startsWith('PalmPush') ? 0 : 100))
     expect(s.update(new Set(['PalmPush:Left']), 0)).toEqual(['PalmPush:Left'])
   })
 })
@@ -204,5 +222,138 @@ describe('assignSides (review fix: duplicate handedness labels)', () => {
     const small = { landmarks: makeHand(POSES.openPalm, { wrist: { x: 0.2, y: 0.7 }, size: 0.2 }), side: 'Left' as const, builtin: { name: 'Open_Palm', score: 0.9 } }
     const big = { landmarks: makeHand(POSES.openPalm, { wrist: { x: 0.8, y: 0.7 }, size: 0.26 }), side: 'Left' as const, builtin: { name: 'Open_Palm', score: 0.9 } }
     expect(t.update([small, big], 0).events.filter((e) => e.gesture === 'PalmPush')).toEqual([])
+  })
+})
+
+describe('two-hand gestures', () => {
+  const view: View = { mirror: false, width: 1280, height: 720 }
+  const PALM = { name: 'Open_Palm', score: 0.9 }
+  const FIST = { name: 'Closed_Fist', score: 0.9 }
+  const palmAt = (x: number, side: 'Left' | 'Right', builtin: RawHand['builtin'] = PALM, size = 0.2): RawHand => ({
+    landmarks: makeHand(POSES.openPalm, { wrist: { x, y: 0.85 }, size }),
+    side,
+    builtin
+  })
+  /** Feeds `frames` (pairs of wrist x for Right/Left hands, or null = one merged hand) every `step` ms. */
+  const feed = (t: GestureTracker, frames: (readonly [number, number] | null)[], step = 33, from = 0) =>
+    frames.flatMap((f, i) => t.update(f ? [palmAt(f[0], 'Right', null), palmAt(f[1], 'Left', null)] : [palmAt(0.5, 'Right', null)], from + i * step).events)
+
+  it('Pray: palms pressed together, fingers up, held still for 500 ms', () => {
+    const t = new GestureTracker(view)
+    const events = feed(t, Array.from({ length: 18 }, () => [0.5, 0.505] as const))
+    const pray = events.filter((e) => e.gesture === 'Pray')
+    expect(pray).toHaveLength(1)
+    expect(pray[0]!.at - pray[0]!.heldFrom!).toBeGreaterThanOrEqual(490)
+    // Pressed palms also look like a finger heart: that must not fire.
+    expect(events.some((e) => e.gesture === 'Heart')).toBe(false)
+  })
+
+  it('Pray needs the hands still', () => {
+    const t = new GestureTracker(view)
+    // Pressed together but sweeping across the frame.
+    const events = feed(t, Array.from({ length: 18 }, (_, i) => [0.3 + i * 0.02, 0.305 + i * 0.02] as const))
+    expect(events.some((e) => e.gesture === 'Pray')).toBe(false)
+  })
+
+  it('isPrayPose rejects hands apart', () => {
+    const geo2 = (x: number) => analyzeHand(makeHand(POSES.openPalm, { wrist: { x, y: 0.85 }, size: 0.2 }), ASPECT)
+    expect(isPrayPose(geo2(0.5), geo2(0.505))).toBe(true)
+    expect(isPrayPose(geo2(0.3), geo2(0.7))).toBe(false)
+  })
+
+  it('Clap: hands meeting fast fire Clap at once, and no Pray right after', () => {
+    const t = new GestureTracker(view)
+    const approach = [[0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.49, 0.51]] as const
+    const still = Array.from({ length: 20 }, () => [0.49, 0.51] as const)
+    const events = feed(t, [...approach, ...still])
+    expect(events.filter((e) => e.gesture === 'Clap')).toHaveLength(1)
+    expect(events.find((e) => e.gesture === 'Clap')!.at).toBe(3 * 33)
+    expect(events.some((e) => e.gesture === 'Pray')).toBe(false)
+  })
+
+  it('Clap: contact that merges the hands into one detection still counts', () => {
+    const t = new GestureTracker(view)
+    const events = feed(t, [[0.2, 0.8], [0.32, 0.68], [0.44, 0.56], null])
+    expect(events.filter((e) => e.gesture === 'Clap')).toHaveLength(1)
+  })
+
+  it('Clap: a slow approach is not a clap', () => {
+    const t = new GestureTracker(view)
+    const events = feed(t, Array.from({ length: 30 }, (_, i) => [0.3 + i * 0.0065, 0.7 - i * 0.0065] as const))
+    expect(events.some((e) => e.gesture === 'Clap')).toBe(false)
+  })
+
+  it('ClapDetector asks for burst tracking during a fast approach', () => {
+    const c = new ClapDetector()
+    c.update(5, { x: 0.5, y: 0.5 }, 0)
+    c.update(3, { x: 0.5, y: 0.5 }, 66)
+    expect(c.approaching(66)).toBe(true)
+    expect(c.approaching(1000)).toBe(false)
+  })
+
+  it('BothHandsUp: two open palms apart, and neither counts as OpenPalm', () => {
+    const t = new GestureTracker(view)
+    const events = Array.from({ length: 12 }, (_, i) => t.update([palmAt(0.25, 'Right'), palmAt(0.75, 'Left')], i * 33).events).flat()
+    expect(events.map((e) => e.gesture)).toEqual(['BothHandsUp'])
+  })
+
+  it('one open palm is OpenPalm', () => {
+    const t = new GestureTracker(view)
+    const events = Array.from({ length: 12 }, (_, i) => t.update([palmAt(0.25, 'Right')], i * 33).events).flat()
+    expect(events.map((e) => e.gesture)).toEqual(['OpenPalm'])
+  })
+
+  it('two fists fire one Fist per hand, within 66 ms', () => {
+    const t = new GestureTracker(view)
+    const fist = (x: number, side: 'Left' | 'Right'): RawHand => ({ landmarks: makeHand(POSES.fist, { wrist: { x, y: 0.8 } }), side, builtin: FIST })
+    const events = Array.from({ length: 4 }, (_, i) => t.update([fist(0.25, 'Right'), fist(0.75, 'Left')], i * 33).events).flat()
+    expect(events.map((e) => `${e.gesture}:${e.hand}@${e.at}`)).toEqual(['Fist:Right@66', 'Fist:Left@66'])
+  })
+
+  it('asks for burst tracking while a gesture is pending, and reports it active once fired', () => {
+    const t = new GestureTracker(view)
+    const fist = { landmarks: makeHand(POSES.fist), side: 'Right' as const, builtin: FIST }
+    expect(t.update([fist], 0).burst).toBe(true)
+    t.update([fist], 33)
+    const fired = t.update([fist], 66)
+    expect(fired.burst).toBe(false)
+    expect(t.update([fist], 99).active.map((e) => e.gesture)).toEqual(['Fist'])
+  })
+})
+
+describe('Pinch vs Fist', () => {
+  it('a fist (thumb resting on the curled index) is never a pinch', () => {
+    const t = new GestureTracker({ mirror: false, width: 1280, height: 720 })
+    const fist: RawHand = { landmarks: makeHand(POSES.fist), side: 'Right', builtin: { name: 'Closed_Fist', score: 0.9 } }
+    expect(geo(fist.landmarks).pinch).toBeLessThan(0.35)
+    const events = Array.from({ length: 6 }, (_, i) => t.update([fist], i * 33).events).flat()
+    expect(events.map((e) => e.gesture)).toEqual(['Fist'])
+  })
+})
+
+describe('review fixes', () => {
+  const view: View = { mirror: false, width: 1280, height: 720 }
+
+  it('a pen grip (fist shape, thumb tip on the index tip) is a pinch', () => {
+    const t = new GestureTracker(view)
+    const lm = makeHand(POSES.fist)
+    lm[4] = { ...lm[8]! }
+    const { hands } = t.update([{ landmarks: lm, side: 'Right', builtin: null }], 0)
+    expect(hands[0]!.pinching).toBe(true)
+  })
+
+  it('only gestures that a rule uses request burst tracking', () => {
+    const t = new GestureTracker(view)
+    t.setUsedGestures(new Set(['ThumbUp']))
+    const fist = { landmarks: makeHand(POSES.fist), side: 'Right' as const, builtin: { name: 'Closed_Fist', score: 0.9 } }
+    expect(t.update([fist], 0).burst).toBe(false)
+    t.setUsedGestures(new Set(['Fist']))
+    expect(t.update([fist], 33).burst).toBe(true)
+  })
+
+  it('long holds (Pray, OpenPalm) do not burst', () => {
+    const t = new GestureTracker(view)
+    const palm = { landmarks: makeHand(POSES.openPalm), side: 'Right' as const, builtin: { name: 'Open_Palm', score: 0.9 } }
+    expect(t.update([palm], 0).burst).toBe(false)
   })
 })

@@ -95,7 +95,7 @@ export class CameraMoves {
   play(cfg: CameraMoveConfig, ctx: EffectContext, now: number): void {
     if (cfg.kind === 'grade') {
       const target = { saturation: cfg.saturation, tint: hexToRgb(cfg.tint), tintAmount: cfg.tintAmount, vignette: cfg.vignette }
-      this.grades.push({ start: now, durationMs: cfg.durationMs, fadeMs: cfg.fadeMs, target })
+      this.grades.push({ all: cfg.gradeScope === 'all', start: now, durationMs: cfg.durationMs, fadeMs: cfg.fadeMs, target })
       return
     }
     const center = { x: this.width / 2, y: this.height / 2 }

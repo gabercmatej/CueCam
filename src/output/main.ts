@@ -1,21 +1,26 @@
 import { ControlPanel } from '../control/panel'
 import type { Config, ConfigResult } from '../shared/config'
-import type { EffectContext, Point, ScreenBox, TriggerEvent } from '../shared/types'
+import type { EffectContext, HandSide, Point, ScreenBox, TriggerEvent } from '../shared/types'
+import { AudioEngine } from './audio/audioEngine'
 import { openCamera } from './camera'
 import { FpsMeter, RollingAverage } from './debug/fpsMeter'
 import { CameraMoves } from './effects/cameraMove'
 import { ClipEngine } from './effects/clip'
+import { LightPaint } from './effects/lightPaint'
+import { type HandPoint, MediaEngine } from './effects/media'
 import { ParticleEngine } from './effects/particles'
 import { EffectRegistry } from './effects/registry'
 import { type Firing, TriggerEngine } from './engine/triggers'
+import { GestureLatency } from './perf/gestureLatency'
 import { QualityController, QUALITY_LEVELS } from './perf/quality'
 import { type FaceBox, FaceSmoother } from './perception/faceSmoother'
 import { onEachVideoFrame } from './perception/frameLoop'
-import { assignSides, GestureTracker, type RawHand } from './perception/gestures'
+import { assignSides, GESTURE_TUNING, GestureTracker, type HandState, type RawHand } from './perception/gestures'
+import type { HandPose } from './perception/__fixtures__/hands'
 import type { Landmark } from './perception/handGeometry'
 import { HandSmoother, type TrackedHand } from './perception/handSmoother'
 import { MODELS, PerceptionClient, type PerceptionMessage } from './perception/perceptionClient'
-import type { FrameTasks, HandsResult, WorkerModels } from './perception/perceptionProtocol'
+import type { FrameTasks, HandsResult, TrackedHandResult, WorkerModels } from './perception/perceptionProtocol'
 import { type Task, TaskScheduler } from './perception/taskScheduler'
 import { SpeechInput } from './perception/speech'
 import { createStage } from './render/stage'
@@ -69,6 +74,8 @@ interface Pipe {
 
 /** Per-stage timings (ms, rolling means) shown in the Control window. */
 const stage = {
+  /** Camera capture → frame callback (rVFC captureTime), when the camera reports it. */
+  capture: new RollingAverage(30),
   grab: new RollingAverage(30),
   track: new RollingAverage(30),
   segment: new RollingAverage(30),
@@ -101,8 +108,17 @@ async function main(): Promise<void> {
     // Missing clip file: a spark burst at the same spot so the trigger still reads.
     particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
   })
-  const registry = new EffectRegistry({ particles, clips, camera })
+  const audio = new AudioEngine()
+  const media = new MediaEngine({ back: pixi.back, front: pixi.front }, pixi.app.renderer, view.width, view.height, view.mirror, audio, (cfg, ctx) => {
+    // All files missing for an anchored/full-frame effect: a spark burst so the trigger still reads.
+    particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
+  })
+  const lightPaint = new LightPaint(pixi.front, pixi.app.renderer, view.width, view.height, pixi.app.renderer.resolution)
+  const registry = new EffectRegistry({ particles, clips, camera, media, lightPaint })
   const triggers = new TriggerEngine()
+  const latency = new GestureLatency()
+  /** Dev: fixture hands replacing the tracker's (end-to-end latency without a person on camera). */
+  let fakeHands: TrackedHandResult[] | null = null
 
   // Perception state
   const quality = new QualityController(startup?.performance ?? { trackEvery: 2, adaptive: true })
@@ -117,11 +133,34 @@ async function main(): Promise<void> {
   let maskCount = 0
   let lastFace: FaceBox | null = null
   const gestures = new GestureTracker(view)
-  let labels: { side: string; label: string | null }[] = []
+  /** The latest tracking result's per-hand state (labels, pinch). */
+  let labels: HandState[] = []
+  /** Hands for effects this frame (palm + size in stage px), from the predicted landmarks; reused objects. */
+  const handPoints: HandPoint[] = []
+  const handPool: Record<HandSide, HandPoint> = {
+    Left: { side: 'Left', palm: { x: 0, y: 0 }, size: 0 },
+    Right: { side: 'Right', palm: { x: 0, y: 0 }, size: 0 }
+  }
+  const pinchPoint: Point = { x: 0, y: 0 }
+  /** The pinch point of a hand that is still pinching (light painting), or null. */
+  const pinchOf = (side: HandSide): Point | null => {
+    let pinching = false
+    for (const h of labels) if (h.side === side && h.pinching) pinching = true
+    let hand: TrackedHand | undefined
+    for (const h of predicted) if (h.side === side) hand = h
+    if (!pinching || !hand) return null
+    const a = hand.landmarks[4]!
+    const b = hand.landmarks[8]!
+    const x = (a.x + b.x) / 2
+    pinchPoint.x = (view.mirror ? 1 - x : x) * view.width
+    pinchPoint.y = ((a.y + b.y) / 2) * view.height
+    return pinchPoint
+  }
   /** Hands predicted for the camera frame currently on screen (reused objects). */
   let predicted: TrackedHand[] = []
   let cameraFrameAt = 0
   let trackerStatus = 'starting…'
+  let burstCount = 0
   let trackErrors = 0
 
   // One worker hosts every task, or hands get their own (performance.perceptionWorkers, read at startup).
@@ -179,14 +218,17 @@ async function main(): Promise<void> {
     for (const firing of firings) {
       // One context per firing: a clip that is still loading keeps it until it plays.
       const ctx: EffectContext = firing.position ? { position: firing.position, hands } : { hands }
+      if (firing.hand) ctx.hand = firing.hand
       if (face) ctx.face = boxToScreen(face.box)
       for (const name of firing.effects) registry.play(name, ctx, performance.now())
       log(`${what} → ${firing.effects.join(' + ')}`)
     }
   }
 
-  function dispatch(event: TriggerEvent): void {
-    play(triggers.handle(event), event.type === 'gesture' ? event.gesture : `"${event.word}"`)
+  function dispatch(event: TriggerEvent): number {
+    const firings = triggers.handle(event)
+    play(firings, event.type === 'gesture' ? event.gesture : `"${event.word}"`)
+    return firings.length
   }
 
   // Config (validated + hot-reloaded in main)
@@ -201,7 +243,9 @@ async function main(): Promise<void> {
     if (result.config !== config) {
       config = result.config
       triggers.setRules(config.rules, config.defaultCooldownMs)
+      gestures.setUsedGestures(new Set(config.rules.flatMap((r) => (r.when.gesture ? [r.when.gesture] : []))))
       registry.setEffects(config.effects)
+      audio.configure(config.audio)
       speech?.setWords(config.words)
       quality.configure(config.performance)
       segmentation = config.performance.segmentation
@@ -247,6 +291,7 @@ async function main(): Promise<void> {
   // Hands arrive ahead of the frame's other results (see HandsResult).
   const onHands = (msg: HandsResult): void => {
     const t0 = performance.now()
+    if (fakeHands) msg = { ...msg, hands: fakeHands }
     stage.track.push(msg.ms)
     stage.latency.push(t0 - msg.at)
     trackFps.tick(t0)
@@ -254,8 +299,17 @@ async function main(): Promise<void> {
     smoother.observe(raw, msg.at)
     const update = gestures.update(raw, msg.at)
     labels = update.hands
+    triggers.setActive(update.active)
+    // A gesture is about to fire: sample its hold on every camera frame instead of every stride.
+    if (update.burst) {
+      const until = performance.now() + GESTURE_TUNING.burstMs
+      for (const pipe of pipes) if (pipe.hosts.includes('hands')) pipe.scheduler.burst(until)
+      burstCount++
+    }
     control?.setLabels(update.hands)
-    update.events.forEach(dispatch)
+    for (const e of update.events) {
+      if (dispatch(e) > 0) latency.fired(e.gesture, e.heldFrom ?? e.at, e.at, t0, stage.capture.value)
+    }
     stage.gestures.push(performance.now() - t0)
   }
   const delegate = startup?.performance.trackerDelegate ?? 'GPU'
@@ -282,7 +336,8 @@ async function main(): Promise<void> {
   // Per camera frame: hand the frame to each worker that has a task due and is free. Never waits.
   onEachVideoFrame(
     video,
-    (now) => {
+    (now, meta) => {
+      if (meta?.captureTime) stage.capture.push(performance.now() - meta.captureTime)
       cameraFps.tick(now)
       cameraFrameAt = now
       const mask = quality.settings.mask
@@ -325,6 +380,62 @@ async function main(): Promise<void> {
     // Dev-only hooks for scripts/perf-probe.mjs (CDP): trigger effects and measure GPU render cost without a camera subject.
     ;(window as unknown as { __skillcamDev: unknown }).__skillcamDev = {
       play: (name: string) => play([{ rule: -1, effects: [name] }], `dev ${name}`),
+      /** A word event, as if Vosk heard it (partial). */
+      say: (word: string) => dispatch({ type: 'word', word, confidence: 1, partial: true, at: performance.now() }),
+      /**
+       * Replaces the tracker's hands with a fixture hand for `ms` (real worker timing, stride, stabilizer,
+       * triggers, effects and render), so gesture latency can be measured with nobody on camera.
+       * `builtin` is a MediaPipe label (Thumb_Up, Closed_Fist, …) or a fixture pose name (rock, openPalm, …).
+       */
+      async fakeGesture(builtin: string, ms = 1500, side: 'Left' | 'Right' = 'Right'): Promise<string> {
+        const { makeHand, POSES } = await import('./perception/__fixtures__/hands')
+        const poses: Record<string, HandPose> = POSES
+        const pose = poses[builtin] ?? POSES.fist
+        // MediaPipe's handedness is the opposite of ours (correctHandedness swaps it back).
+        const hand: TrackedHandResult = {
+          landmarks: makeHand(pose, { wrist: { x: side === 'Right' ? 0.35 : 0.65, y: 0.8 } }),
+          handedness: side === 'Right' ? 'Left' : 'Right',
+          builtin: builtin in POSES ? null : { name: builtin, score: 0.9 }
+        }
+        fakeHands = [hand]
+        await new Promise((r) => setTimeout(r, ms))
+        fakeHands = []
+        await new Promise((r) => setTimeout(r, 600))
+        fakeHands = null
+        return latency.describe()
+      },
+      latency: () => ({ last: latency.last, avg: latency.averages(), count: latency.count }),
+      /**
+       * Fixture hands for `ms`, moving in a slow circle when `move` is set: e.g.
+       * [{ pose: 'openPalm', builtin: 'Open_Palm', side: 'Right', x: 0.3 }, { pose: 'pinch', side: 'Left', x: 0.7, move: true }].
+       * "pinch" is an open palm with the thumb tip on the index tip.
+       */
+      async fakeHands(specs: { pose: string; builtin?: string; side: 'Left' | 'Right'; x: number; y?: number; move?: boolean }[], ms = 3000, dropEveryMs = 0): Promise<void> {
+        const { makeHand, POSES } = await import('./perception/__fixtures__/hands')
+        const poses: Record<string, HandPose> = POSES
+        const t0 = performance.now()
+        const build = (): void => {
+          const t = (performance.now() - t0) / 1000
+          // Simulated tracking dropouts: no hands for 70 ms every `dropEveryMs`.
+          if (dropEveryMs && (t * 1000) % dropEveryMs < 70) {
+            fakeHands = []
+            return
+          }
+          fakeHands = specs.map((h) => {
+            const wrist = { x: h.x + (h.move ? 0.12 * Math.cos(t * 2.5) : 0), y: (h.y ?? 0.8) + (h.move ? 0.12 * Math.sin(t * 2.5) : 0) }
+            const landmarks = makeHand(poses[h.pose] ?? POSES.openPalm, { wrist, size: 0.2 })
+            if (h.pose === 'pinch') landmarks[4] = { ...landmarks[8]! }
+            return { landmarks, handedness: h.side === 'Right' ? 'Left' : 'Right', builtin: h.builtin ? { name: h.builtin, score: 0.9 } : null }
+          })
+        }
+        build()
+        const timer = setInterval(build, 16)
+        await new Promise((r) => setTimeout(r, ms))
+        clearInterval(timer)
+        fakeHands = []
+        await new Promise((r) => setTimeout(r, 600))
+        fakeHands = null
+      },
       /** Forces the person layer on (true), off (false) or back to automatic (null) for measurements. */
       cutout: (on: boolean | null) => (forceCutout = on),
       /** Mean person confidence (0–1) of the latest real mask: tells which way round the model's mask is. */
@@ -395,7 +506,25 @@ async function main(): Promise<void> {
     renderFps.tick(now)
     play(triggers.tick(now), 'held word')
     predicted = smoother.predict(cameraFrameAt)
+    handPoints.length = 0
+    for (const h of predicted) {
+      const p = handPool[h.side]
+      const lm = h.landmarks
+      let x = 0
+      let y = 0
+      for (const i of PALM) {
+        x += lm[i]!.x
+        y += lm[i]!.y
+      }
+      x /= PALM.length
+      p.palm.x = (view.mirror ? 1 - x : x) * view.width
+      p.palm.y = (y / PALM.length) * view.height
+      p.size = Math.hypot((lm[0]!.x - lm[9]!.x) * view.width, (lm[0]!.y - lm[9]!.y) * view.height)
+      handPoints.push(p)
+    }
     particles.update(Math.min(ticker.deltaMS, 100) / 1000)
+    media.update(now, ticker, handPoints)
+    lightPaint.update(now, pinchOf)
     camera.update(now)
     if (fakeMask) maskAt = now
     // The person cutout costs a full-screen pass: draw it only while back FX exist and the mask is fresh.
@@ -420,6 +549,7 @@ async function main(): Promise<void> {
       }
     }
     const end = performance.now()
+    latency.rendered(previewMs ? end - previewMs : end, stage.frame.value || 1000 / 60)
     // The Control preview isn't part of the output; keep it out of the quality signal (no level changes it).
     const work = end - frameStart - previewMs
     const frameMs = lastFrameAt ? end - lastFrameAt : 1000 / 60
@@ -456,11 +586,13 @@ async function main(): Promise<void> {
     control?.setStats([
       `render ${renderFps.fps.toFixed(0)} fps (cap ${q.maxRenderFps}) · camera ${cameraFps.fps.toFixed(0)} fps · tracked ${trackFps.fps.toFixed(0)}/s`,
       `quality L${quality.level}/${QUALITY_LEVELS.length - 1}: track every ${q.trackEvery} · particles ×${q.particleScale} · tracker ${trackerStatus}${trackErrors ? ` · ${trackErrors} errors` : ''}`,
-      `stages ms  grab ${ms(stage.grab)} · hands ${ms(stage.track)} · latency ${ms(stage.latency)} · gestures ${ms(stage.gestures)}`,
+      `gesture latency ${latency.describe()} (avg total ${latency.avg.total.value.toFixed(0)} ms over ${Math.min(latency.count, 20)})`,
+      `stages ms  capture ${ms(stage.capture)} · grab ${ms(stage.grab)} · hands ${ms(stage.track)} · latency ${ms(stage.latency)} · gestures ${ms(stage.gestures)}`,
       `           effects ${ms(stage.effects)} · render ${ms(stage.render)} · preview ${ms(stage.preview)} · main/frame ${ms(stage.work)} · interval ${ms(stage.frame)}`,
       `worker ms  total/frame ${ms(stage.worker)} · prep ${ms(stage.prep)} · segment ${ms(stage.segment)} · face ${ms(stage.face)} · mask apply (CPU; GPU upload counts in render) ${ms(stage.mask)}`,
       `segment ${segmentation ? `every ${quality.strides.segment} · mask ${q.mask.width}×${q.mask.height} · age ${maskAge()} · cutout ${pixi.camera.person.visible ? 'ON' : 'idle'}` : 'off'} · face ${faceStatus()}`,
-      `long tasks ${longTaskPerS.toFixed(0)} ms/s · worker busy skips ${pipes.map((p) => p.scheduler.busySkips).join('/')} · particles ${particles.count}`,
+      `long tasks ${longTaskPerS.toFixed(0)} ms/s · worker busy skips ${pipes.map((p) => p.scheduler.busySkips).join('/')} · hand bursts ${burstCount} · particles ${particles.count} · media ${media.count} · painting ${lightPaint.active}`,
+      `audio → ${audio.deviceLabel}`,
       `config ${configStatus} · ${triggers.armed ? 'ARMED' : 'disarmed'}`,
       `speech ${speechStatus} ${'█'.repeat(Math.round(micPeak * 12)).padEnd(12, '·')} decoding ${(speechDecodeShare * 100).toFixed(0)}% · last: ${lastWord}`
     ])
@@ -473,6 +605,7 @@ async function main(): Promise<void> {
           cameraFps: cameraFps.fps,
           trackFps: trackFps.fps,
           quality: quality.level,
+          captureMs: stage.capture.value,
           grabMs: stage.grab.value,
           trackMs: stage.track.value,
           segmentMs: stage.segment.value,

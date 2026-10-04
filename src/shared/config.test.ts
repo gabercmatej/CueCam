@@ -114,3 +114,52 @@ describe('parseConfig', () => {
     expect(parse({ ...valid, effects }).ok).toBe(true)
   })
 })
+
+describe('Phase 3b config', () => {
+  const withEffects = (effects: Record<string, unknown>, rules: unknown[] = []) => parse({ ...valid, rules: [...valid.rules, ...rules], effects: { ...valid.effects, ...effects } })
+
+  it('media effects default to a front-layer corner card with sound on, the key auto-detected', () => {
+    const r = withEffects({ thumbs: { type: 'media', files: 'thumbs up' } })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const e = r.config.effects['thumbs']
+    expect(e).toMatchObject({ files: ['thumbs up'], placement: 'corner', corner: 'auto', layer: 'front', volume: 1, muted: false, follow: false, fadeMs: 250 })
+    expect((e as { key?: boolean }).key).toBeUndefined()
+    expect((e as { similarity?: number }).similarity).toBeUndefined()
+  })
+
+  it('rejects media paths that leave reactions/', () => {
+    expect(withEffects({ x: { type: 'media', files: '../secrets.png' } }).ok).toBe(false)
+    expect(withEffects({ x: { type: 'media', files: ['/etc/passwd'] } }).ok).toBe(false)
+    expect(withEffects({ x: { type: 'sound', files: 'rock/../../x.mp3' } }).ok).toBe(false)
+  })
+
+  it('accepts sound, light painting, audio settings, per-hand rules and the new gestures', () => {
+    const r = parse({
+      ...valid,
+      audio: { volume: 0.8, device: 'BlackHole' },
+      rules: [
+        { when: { gesture: 'Fist' }, play: 'confetti_hand', perHand: true },
+        { when: { gesture: 'Pinch' }, play: 'paint' },
+        { when: { gesture: 'Clap' }, play: 'yeah' },
+        { when: { gesture: 'Pray' }, play: 'yeah' },
+        { when: { gesture: 'BothHandsUp' }, play: 'yeah' }
+      ],
+      effects: { ...valid.effects, paint: { type: 'lightPaint' }, yeah: { type: 'sound', files: 'rock', volume: 0.7 } }
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.config.audio).toEqual({ volume: 0.8, muted: false, device: 'BlackHole' })
+    expect(r.config.rules[0]!.perHand).toBe(true)
+    expect(r.config.rules[1]!.perHand).toBe(false)
+    expect(r.config.effects['paint']).toMatchObject({ color: 'rainbow', width: 14, fadeMs: 300 })
+  })
+
+  it('grades colour everything by default, or only the camera', () => {
+    const r = withEffects({ g1: { type: 'cameraMove', kind: 'grade' }, g2: { type: 'cameraMove', kind: 'grade', gradeScope: 'camera' } })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.config.effects['g1']).toMatchObject({ gradeScope: 'all' })
+    expect(r.config.effects['g2']).toMatchObject({ gradeScope: 'camera' })
+  })
+})

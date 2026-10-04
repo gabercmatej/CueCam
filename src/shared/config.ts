@@ -19,8 +19,34 @@ export type Anchor = (typeof ANCHORS)[number]
 export const PARTICLE_PRESETS = ['confetti', 'hearts', 'sparks'] as const
 export type ParticlePreset = (typeof PARTICLE_PRESETS)[number]
 
+export const CORNERS = ['auto', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as const
+export type Corner = (typeof CORNERS)[number]
+
 const Anchor = z.enum(ANCHORS)
 const HexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'must be a #rrggbb colour')
+const Volume = z.number().min(0).max(1)
+
+/**
+ * A path inside reactions/ ("thumbs up/cat.png"), or a folder there ("thumbs up"): a folder means
+ * every media file in it, and one is picked at random each time (never the same twice in a row).
+ */
+const MediaPath = z
+  .string()
+  .min(1)
+  .refine((p) => !p.startsWith('/') && !p.split(/[\\/]/).includes('..'), 'must be a path inside reactions/ (no "..", not absolute)')
+const MediaFiles = z.union([MediaPath, z.array(MediaPath).min(1)]).transform((f) => (Array.isArray(f) ? f : [f]))
+
+/** Chroma key for green-screen video. Absent = detected from the clip's first frame (a green border means keyed). */
+const KeyOptions = {
+  key: z.boolean().optional(),
+  keyColor: HexColor.optional(),
+  /** Colours within this chroma distance of the key become transparent (0–1, OBS-like). Default: from the key colour (≤ 0.4). */
+  similarity: z.number().min(0).max(1).optional(),
+  /** Width of the soft edge above `similarity`. */
+  smoothness: z.number().min(0).max(1).default(0.08),
+  /** How strongly the key colour's spill on the subject is removed (0–1). */
+  spill: z.number().min(0).max(1).default(0.6)
+}
 
 const ParticlesEffect = z.object({
   type: z.literal('particles'),
@@ -51,6 +77,59 @@ const ClipEffect = z.object({
   spill: z.number().min(0).max(1).default(0.6)
 })
 
+/** Images (png/jpg/webp), GIFs, WebM (with alpha) and MP4 (green screen) from reactions/. */
+const MediaEffect = z.object({
+  type: z.literal('media'),
+  files: MediaFiles,
+  /**
+   * corner: a reaction card in a corner (pops in, holds, fades; several stack);
+   * anchor: placed at `anchor` (and with `follow`, tracks the hand that triggered it);
+   * fullscreen: covers the whole frame.
+   */
+  placement: z.enum(['corner', 'anchor', 'fullscreen']).default('corner'),
+  /** Corner placement: which corner. auto = the one farthest from your face. */
+  corner: z.enum(CORNERS).default('auto'),
+  anchor: Anchor.default('center'),
+  layer: z.enum(['back', 'front']).default('front'),
+  /** Corner: the card's longest side ÷ frame height (default 0.3). Anchor: height ÷ frame height (default 1). */
+  size: z.number().positive().max(4).optional(),
+  /** Anchor "hand": keep following the hand that triggered it (predicted every frame). */
+  follow: z.boolean().default(false),
+  /** Size by the hand instead: height = handScale × hand size (wrist to middle knuckle). */
+  handScale: z.number().positive().max(40).optional(),
+  /** The point of the media (0–1, from its top left) that sits on the anchor. Default: the anchor's natural alignment. */
+  origin: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]).optional(),
+  /** Use only this part of the source: [x, y, width, height] as fractions (e.g. a small fireball in a wide clip). */
+  crop: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().gt(0).max(1), z.number().gt(0).max(1)]).optional(),
+  /** How long it stays. Default: 2.5 s for images and GIFs, the clip's length for video. */
+  holdMs: z.number().int().positive().max(60_000).optional(),
+  /** Fade-out at the end. */
+  fadeMs: z.number().int().nonnegative().max(5000).default(250),
+  /** Video sound: per-effect volume and mute (video clips only; images are silent). */
+  volume: Volume.default(1),
+  muted: z.boolean().default(false),
+  ...KeyOptions
+})
+
+/** A sound effect (mp3/wav/ogg/m4a) from reactions/; a folder picks one at random. */
+const SoundEffect = z.object({
+  type: z.literal('sound'),
+  files: MediaFiles,
+  volume: Volume.default(1),
+  muted: z.boolean().default(false)
+})
+
+/** Light painting: draws a glowing line at the pinch point while the triggering hand stays pinched; release clears it. */
+const LightPaintEffect = z.object({
+  type: z.literal('lightPaint'),
+  /** "rainbow" cycles the hue along the stroke. */
+  color: z.union([z.literal('rainbow'), HexColor]).default('rainbow'),
+  /** Line width in stage px (1280×720 units). */
+  width: z.number().positive().max(80).default(14),
+  /** How fast the drawing fades out after release. */
+  fadeMs: z.number().int().nonnegative().max(5000).default(300)
+})
+
 const CameraMoveEffect = z.object({
   type: z.literal('cameraMove'),
   /** shake and zoom move the scene; grade colours the camera (saturation, tint) and darkens the edges (vignette). */
@@ -70,10 +149,12 @@ const CameraMoveEffect = z.object({
   /** Grade: vignette strength (0 = none, 1 = edges almost black). */
   vignette: z.number().min(0).max(1).default(0),
   /** Grade: fade-in and fade-out time. */
-  fadeMs: z.number().int().nonnegative().max(5000).default(250)
+  fadeMs: z.number().int().nonnegative().max(5000).default(250),
+  /** Grade: colour only the camera, or everything (camera and effects). */
+  gradeScope: z.enum(['camera', 'all']).default('all')
 })
 
-const Effect = z.discriminatedUnion('type', [ParticlesEffect, ClipEffect, CameraMoveEffect])
+const Effect = z.discriminatedUnion('type', [ParticlesEffect, ClipEffect, MediaEffect, SoundEffect, LightPaintEffect, CameraMoveEffect])
 
 const Rule = z.object({
   when: z
@@ -85,7 +166,17 @@ const Rule = z.object({
     })
     .refine((w) => w.gesture || w.word, 'a rule needs a gesture, a word, or both'),
   play: z.union([z.string(), z.array(z.string()).min(1)]).transform((p) => (Array.isArray(p) ? p : [p])),
-  cooldownMs: z.number().int().nonnegative().optional()
+  cooldownMs: z.number().int().nonnegative().optional(),
+  /** Gesture rules: a separate cooldown per hand (two fists at once fire twice). */
+  perHand: z.boolean().default(false)
+})
+
+const Audio = z.object({
+  /** Master volume for every effect sound. */
+  volume: Volume.default(1),
+  muted: z.boolean().default(false),
+  /** Output device: part of its name (e.g. "BlackHole", "MacBook Air Speakers"). Default: the system output. */
+  device: z.string().min(1).optional()
 })
 
 const Performance = z.object({
@@ -119,6 +210,7 @@ export const ConfigSchema = z
     hotkey: z.string().default('CommandOrControl+Shift+K'),
     performance: Performance.prefault({}),
     video: Video.prefault({}),
+    audio: Audio.prefault({}),
     defaultCooldownMs: z.number().int().nonnegative().default(2000),
     words: z.array(z.string().min(1)).min(1),
     rules: z.array(Rule),

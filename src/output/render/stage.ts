@@ -1,7 +1,8 @@
 import { Application, Container, VideoSource } from 'pixi.js'
-import type { Grade } from '../effects/grade'
+import { type Grade, NEUTRAL_GRADE } from '../effects/grade'
 import type { View } from '../view'
 import { type CameraLayers, createCameraLayers, createVignette } from './cameraLayer'
+import { createGradeFilter } from './gradeFilter'
 
 /**
  * Render layers, bottom to top (BUILD_PLAN §3). Camera moves transform the whole scene.
@@ -61,6 +62,11 @@ export async function createStage(video: HTMLVideoElement, view: View, pixels: {
   const overlay = new Container()
   overlay.addChild(vignette.mesh)
   app.stage.addChild(scene, overlay)
+  // Grade scope "all": the whole frame through one filter pass, attached only while needed.
+  const gradeAll = createGradeFilter()
+  const gradeFilters = [gradeAll.filter]
+  app.stage.filterArea = app.screen
+  let filtered = false
   return {
     app,
     scene,
@@ -69,7 +75,16 @@ export async function createStage(video: HTMLVideoElement, view: View, pixels: {
     overlay,
     camera,
     setGrade(grade) {
-      camera.setGrade(grade)
+      if (grade.all) {
+        gradeAll.set(grade)
+        camera.setGrade(NEUTRAL_GRADE)
+      } else {
+        camera.setGrade(grade)
+      }
+      if (grade.all !== filtered) {
+        filtered = grade.all
+        app.stage.filters = filtered ? gradeFilters : null
+      }
       vignette.set(grade.vignette)
     }
   }

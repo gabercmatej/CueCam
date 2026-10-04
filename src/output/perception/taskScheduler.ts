@@ -12,6 +12,10 @@ export const TASKS: readonly Task[] = ['hands', 'segment', 'face']
  * Segmentation yields to hand tracking by one frame (when both strides leave room, and it
  * isn't overdue; the very first frame runs everything), so the two heavy tasks interleave instead of stacking on the same frame: the
  * worker's load is spread evenly, and the mask doesn't wait behind the hands.
+ *
+ * Burst: `burst(until)` makes hands due on every frame until then (a gesture is about to fire, so
+ * its hold is sampled every 33 ms instead of every stride). A busy worker still skips, so a burst
+ * can't queue work.
  */
 export class TaskScheduler {
   /** Frames skipped because the worker was still busy while a task was due (a load signal). */
@@ -22,6 +26,8 @@ export class TaskScheduler {
   private readonly since: Record<Task, number> = { hands: Infinity, segment: Infinity, face: Infinity }
   /** Timestamp of the frame in flight (also when it was sent). */
   private inFlightSince: number | null = null
+  /** Hands run on every frame until this time. */
+  private burstUntil = -Infinity
 
   constructor(
     every: Record<Task, number>,
@@ -35,6 +41,11 @@ export class TaskScheduler {
     return this.inFlightSince !== null
   }
 
+  /** Track hands on every frame until `until` (only while hand tracking is on for this worker). */
+  burst(until: number): void {
+    this.burstUntil = Math.max(this.burstUntil, until)
+  }
+
   /** Call once per camera frame. True = grab this frame and send it with the tasks in `due`. */
   offer(now: number): boolean {
     let anyDue = false
@@ -42,6 +53,8 @@ export class TaskScheduler {
       this.since[t]++
       this.due[t] = this.every[t] > 0 && this.since[t] >= this.every[t]
     }
+    if (this.every.hands > 0 && now < this.burstUntil) this.due.hands = true
+    else this.burstUntil = -Infinity
     // Interleave only when both have frames to spare (hands on every frame leave no free frame to yield to).
     const seg = this.every.segment
     if (this.due.hands && this.due.segment && this.every.hands >= 2 && seg >= 2 && this.since.segment < 2 * seg) this.due.segment = false

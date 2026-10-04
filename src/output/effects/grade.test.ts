@@ -23,6 +23,11 @@ describe('gradeEnvelope', () => {
 })
 
 describe('combineGrades', () => {
+  it('colours everything while any active grade has scope "all"', () => {
+    expect(combineGrades([bw, { ...gold, all: true }], 1000, fresh()).all).toBe(true)
+    expect(combineGrades([bw, { ...gold, all: true, durationMs: 900 }], 1000, fresh()).all).toBe(false)
+  })
+
   it('is neutral with nothing active', () => {
     expect(combineGrades([], 0, fresh())).toEqual(NEUTRAL_GRADE)
   })

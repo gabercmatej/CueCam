@@ -1,5 +1,7 @@
-/** Colour grade applied to the camera (both camera layers) plus a screen vignette. */
+/** Colour grade applied to the camera (both camera layers), or to everything, plus a screen vignette. */
 export interface Grade {
+  /** Colour effects too (gradeScope "all"), not just the camera. */
+  all: boolean
   /** 0 = black and white, 1 = unchanged, up to 2 = boosted. */
   saturation: number
   /** Tint colour, linear 0–1 RGB. */
@@ -11,13 +13,15 @@ export interface Grade {
 }
 
 export interface ActiveGrade {
+  /** gradeScope "all": this grade colours the effects too. */
+  all?: boolean
   start: number
   durationMs: number
   fadeMs: number
-  target: Grade
+  target: Omit<Grade, 'all'>
 }
 
-export const NEUTRAL_GRADE: Readonly<Grade> = Object.freeze({ saturation: 1, tint: [1, 1, 1] as [number, number, number], tintAmount: 0, vignette: 0 })
+export const NEUTRAL_GRADE: Readonly<Grade> = Object.freeze({ all: false, saturation: 1, tint: [1, 1, 1] as [number, number, number], tintAmount: 0, vignette: 0 })
 
 const smooth = (t: number): number => t * t * (3 - 2 * t)
 
@@ -40,8 +44,10 @@ export function hexToRgb(hex: string): [number, number, number] {
  * change wins, the strongest vignette wins, the tint amount is the strongest one and its colour
  * is the mix of the active tints weighted by their current strength (no pop when one tint hands
  * over to another). Each grade's effect is scaled by its envelope, so it animates in and out.
+ * If any active grade has scope "all", the combined grade colours everything.
  */
 export function combineGrades(grades: readonly ActiveGrade[], now: number, out: Grade): Grade {
+  out.all = false
   out.saturation = 1
   out.tintAmount = 0
   out.vignette = 0
@@ -52,6 +58,7 @@ export function combineGrades(grades: readonly ActiveGrade[], now: number, out: 
   for (const g of grades) {
     const e = gradeEnvelope(g, now)
     if (e <= 0) continue
+    if (g.all) out.all = true
     const s = 1 + (g.target.saturation - 1) * e
     if (Math.abs(s - 1) > Math.abs(out.saturation - 1)) out.saturation = s
     out.vignette = Math.max(out.vignette, g.target.vignette * e)
