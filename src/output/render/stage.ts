@@ -1,49 +1,76 @@
-import { Application, Container, Sprite, Texture, VideoSource } from 'pixi.js'
+import { Application, Container, VideoSource } from 'pixi.js'
+import type { Grade } from '../effects/grade'
 import type { View } from '../view'
+import { type CameraLayers, createCameraLayers, createVignette } from './cameraLayer'
 
 /**
  * Render layers, bottom to top (BUILD_PLAN §3). Camera moves transform the whole scene.
- * "back" sits just above the opaque camera (under front FX) until Phase 3's person cutout
- * goes between back and front FX. The Output stage has no debug layer: UI lives in Control.
+ *   scene:   camera background → back FX → person (camera masked by segmentation) → front FX
+ *   overlay: vignette, banners (screen-fixed, not moved by shake/zoom)
+ * The person layer only draws while there are back FX to hide and a fresh mask; otherwise
+ * back FX simply sit over the camera (the pre-segmentation behaviour).
+ * The Output stage has no debug layer: UI lives in Control.
  */
 export interface Stage {
   app: Application
-  /** back FX + camera + front FX; shake/zoom apply here so effects stay glued to the video. */
+  /** Everything camera-attached; shake/zoom apply here so effects stay glued to the video. */
   scene: Container
   back: Container
   front: Container
   overlay: Container
+  camera: CameraLayers
+  setGrade(grade: Grade): void
 }
 
-export async function createStage(video: HTMLVideoElement, view: View): Promise<Stage> {
+/**
+ * The stage keeps the view's logical size (1280×720 units, which all effects are tuned in) and
+ * renders at `pixels.height / view.height` resolution, so the canvas backing store has exactly
+ * the output's real pixels (1920×1080): camera pixels map 1:1 and OBS captures them unscaled.
+ */
+export async function createStage(video: HTMLVideoElement, view: View, pixels: { width: number; height: number }): Promise<Stage> {
   const app = new Application()
   await app.init({
     width: view.width,
     height: view.height,
+    resolution: pixels.height / view.height,
     background: '#000000',
     preference: 'webgl',
     antialias: false,
     autoDensity: false,
-    resolution: 1
+    // The canvas is presented as is: no alpha compositing with the page behind it.
+    backgroundAlpha: 1,
+    powerPreference: 'high-performance'
   })
+  // The backing store is the real pixel size; CSS stretches it over the window, which is sized
+  // in points to hold exactly those pixels (main/index.ts), so nothing is resampled.
+  app.canvas.style.width = '100vw'
+  app.canvas.style.height = '100vh'
   document.body.appendChild(app.canvas)
+  console.log(`[output] canvas ${app.canvas.width}×${app.canvas.height} px · window ${innerWidth}×${innerHeight} pt × devicePixelRatio ${devicePixelRatio}`)
 
   // updateFPS 0: Pixi uploads each new camera frame (it uses requestVideoFrameCallback).
-  const source = new VideoSource({ resource: video, autoPlay: true, updateFPS: 0 })
-  const camera = new Sprite(new Texture({ source }))
-  camera.width = view.width
-  camera.height = view.height
-  if (view.mirror) {
-    // Flip the picture only; effect coordinates are mirrored in view.toScreen.
-    camera.scale.x *= -1
-    camera.x = view.width
-  }
+  // Linear filtering is exact at 1:1 and only blends while zoomed or shaken; no mipmaps.
+  const source = new VideoSource({ resource: video, autoPlay: true, updateFPS: 0, scaleMode: 'linear', autoGenerateMipmaps: false })
+  const camera = createCameraLayers(source, view.width, view.height, view.mirror)
+  const vignette = createVignette(view.width, view.height)
 
   const scene = new Container()
   const back = new Container()
   const front = new Container()
-  scene.addChild(camera, back, front)
+  scene.addChild(camera.background, back, camera.person, front)
   const overlay = new Container()
+  overlay.addChild(vignette.mesh)
   app.stage.addChild(scene, overlay)
-  return { app, scene, back, front, overlay }
+  return {
+    app,
+    scene,
+    back,
+    front,
+    overlay,
+    camera,
+    setGrade(grade) {
+      camera.setGrade(grade)
+      vignette.set(grade.vignette)
+    }
+  }
 }

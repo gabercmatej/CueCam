@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { QUALITY_LEVELS, QualityController } from './quality'
+import { QUALITY_LEVELS, QualityController, strides, workerShare } from './quality'
 
 interface Load {
   frameMs: number
@@ -18,7 +18,7 @@ function run(q: QualityController, from: number, durationMs: number, load: Load)
     t += load.frameMs
     q.frame(t, load.frameMs, load.workMs)
     if (t >= nextTrack) {
-      q.tracked(load.trackMs)
+      q.worked({ hands: load.trackMs, prep: 0 })
       nextTrack += (1000 / 30) * q.settings.trackEvery
     }
   }
@@ -107,5 +107,44 @@ describe('QualityController', () => {
     expect(q.level).toBe(3)
     q.configure({ trackEvery: 4, adaptive: true })
     expect(q.level).toBe(4)
+  })
+})
+
+describe('perception load in quality levels', () => {
+  const seg = { trackEvery: 2, adaptive: true, segmentation: true, segmentEvery: 2, faceDetection: true } as const
+
+  it('gives way on segmentation before capping the render rate', () => {
+    const [, l1, l2, l3] = QUALITY_LEVELS
+    expect(strides(l1!, seg)).toEqual({ hands: 2, segment: 2, face: 3 })
+    expect(strides(l2!, seg).segment).toBeGreaterThan(2)
+    expect(l2!.maxRenderFps).toBe(60)
+    expect(l3!.mask.width).toBeLessThan(l2!.mask.width)
+  })
+
+  it('never segments more often than configured, and switches off tasks that are off', () => {
+    expect(strides(QUALITY_LEVELS[0]!, { ...seg, segmentEvery: 4 }).segment).toBe(4)
+    expect(strides(QUALITY_LEVELS[1]!, { trackEvery: 2, adaptive: true })).toEqual({ hands: 2, segment: 0, face: 0 })
+  })
+
+  it('predicts the busiest worker: one shared worker sums the tasks, two split them', () => {
+    const load = { hands: 40, segment: 20, face: 3, prep: 1 }
+    const l1 = QUALITY_LEVELS[1]!
+    const one = workerShare(l1, seg, load)
+    const two = workerShare(l1, { ...seg, perceptionWorkers: 2 }, load)
+    expect(one).toBeCloseTo((40 / 2 + 20 / 2 + 3 / 3 + 1 / 2) / (1000 / 30))
+    expect(two).toBeCloseTo((40 / 2 + 1 / 2) / (1000 / 30))
+    expect(two).toBeLessThan(one)
+  })
+
+  it('degrades when segmentation pushes the shared worker over its budget', () => {
+    const q = new QualityController(seg)
+    let t = 0
+    for (let i = 0; i < 70; i++) {
+      t += 16.7
+      q.frame(t, 16.7, 1)
+      if (i % 2 === 0) q.worked({ hands: 30, segment: 25, prep: 1 })
+    }
+    expect(q.level).toBe(2)
+    expect(q.strides.segment).toBe(3)
   })
 })

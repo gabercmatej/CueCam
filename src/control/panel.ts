@@ -5,11 +5,12 @@
  * of the Output canvas (one GPU blit), with the debug overlay drawn on top.
  */
 import type { HandSide } from '../shared/types'
+import type { FaceState } from '../output/perception/faceSmoother'
 import type { FingerStates, Landmark } from '../output/perception/handGeometry'
 
 export const CONTROL_WINDOW_NAME = 'skillcam-control'
 
-/** Preview size (the Output is 1280×720). */
+/** Preview size (the Output is 16:9). */
 const PREVIEW = { width: 640, height: 360 }
 // The preview is mirrored, like a mirror: normalized raw camera x → (1 − x) · width.
 const sx = (p: Landmark): number => (1 - p.x) * PREVIEW.width
@@ -52,6 +53,8 @@ const STYLE = `
   canvas { width: ${PREVIEW.width}px; height: ${PREVIEW.height}px; background: #000; border-radius: 6px; display: block; }
   pre { margin: 0; white-space: pre-wrap; }
   .muted { color: #8b8d93; }
+  .toggles { display: flex; gap: 16px; }
+  label { cursor: pointer; user-select: none; }
 `
 
 interface LabelText {
@@ -66,6 +69,11 @@ export class ControlPanel {
   private readonly ctx: CanvasRenderingContext2D
   private readonly stats: HTMLPreElement
   private readonly log: HTMLPreElement
+  private readonly showMask: HTMLInputElement
+  private readonly showFace: HTMLInputElement
+  /** The latest segmentation mask as a tinted image, rebuilt per mask only while the toggle is on. */
+  private readonly maskCanvas: HTMLCanvasElement
+  private maskImage: ImageData | null = null
 
   private constructor(private readonly win: Window) {
     const doc = win.document
@@ -83,8 +91,23 @@ export class ControlPanel {
     this.stats = doc.createElement('pre')
     this.log = doc.createElement('pre')
     this.log.className = 'muted'
+    this.maskCanvas = doc.createElement('canvas')
+    const toggle = (text: string): [HTMLLabelElement, HTMLInputElement] => {
+      const label = doc.createElement('label')
+      const box = doc.createElement('input')
+      box.type = 'checkbox'
+      label.append(box, ` ${text}`)
+      return [label, box]
+    }
+    const [maskLabel, showMask] = toggle('segmentation mask')
+    const [faceLabel, showFace] = toggle('face box')
+    this.showMask = showMask
+    this.showFace = showFace
+    const toggles = doc.createElement('div')
+    toggles.className = 'toggles'
+    toggles.append(maskLabel, faceLabel)
     const main = doc.createElement('main')
-    main.append(canvas, this.stats, this.log)
+    main.append(canvas, toggles, this.stats, this.log)
     doc.body.append(main)
   }
 
@@ -113,16 +136,51 @@ export class ControlPanel {
     }
   }
 
+  /** A new segmentation mask (bytes, raw camera orientation). Only converted while the mask toggle is on. */
+  setMask(data: Uint8Array, width: number, height: number): void {
+    if (this.win.closed || !this.showMask.checked) return
+    if (!this.maskImage || this.maskImage.width !== width || this.maskImage.height !== height) {
+      this.maskCanvas.width = width
+      this.maskCanvas.height = height
+      this.maskImage = new ImageData(width, height)
+    }
+    const px = this.maskImage.data
+    // Person = magenta, alpha follows confidence; background stays clear.
+    for (let i = 0, j = 0; i < data.length; i++, j += 4) {
+      px[j] = 255
+      px[j + 1] = 40
+      px[j + 2] = 200
+      px[j + 3] = data[i]! >> 1
+    }
+    this.maskCanvas.getContext('2d')!.putImageData(this.maskImage, 0, 0)
+  }
+
   /**
    * Copies the Output canvas, mirrored, then draws the overlay. Call right after the Output
    * renders, in the same task, so the WebGL drawing buffer is still valid.
    */
-  drawPreview(output: HTMLCanvasElement, hands: OverlayHand[]): void {
+  drawPreview(output: HTMLCanvasElement, hands: OverlayHand[], face: FaceState | null): void {
     if (this.win.closed) return
     const g = this.ctx
     g.setTransform(-1, 0, 0, 1, PREVIEW.width, 0)
     g.drawImage(output, 0, 0, PREVIEW.width, PREVIEW.height)
+    if (this.showMask.checked && this.maskImage) g.drawImage(this.maskCanvas, 0, 0, PREVIEW.width, PREVIEW.height)
     g.setTransform(1, 0, 0, 1, 0, 0)
+
+    if (this.showFace.checked && face) {
+      const b = face.box
+      const x = (1 - (b.x + b.width)) * PREVIEW.width
+      const y = b.y * PREVIEW.height
+      g.lineWidth = 2
+      g.setLineDash(face.visible ? [] : [6, 4])
+      g.strokeStyle = face.visible ? '#4fc3ff' : '#ffb340'
+      g.strokeRect(x, y, b.width * PREVIEW.width, b.height * PREVIEW.height)
+      g.setLineDash([])
+      g.font = '12px Menlo, monospace'
+      g.textAlign = 'left'
+      g.fillStyle = g.strokeStyle
+      g.fillText(face.visible ? 'face' : 'face (held)', x, y - 5)
+    }
 
     g.lineWidth = 1.5
     g.strokeStyle = 'rgba(255,255,255,0.6)'

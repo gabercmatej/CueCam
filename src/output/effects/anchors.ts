@@ -11,12 +11,12 @@ export interface AnchorPoint {
 const UP = -Math.PI / 2
 
 /**
- * Where an effect appears for a given anchor. Hand anchors are already in screen space and
- * fall back to visible hands, then the center. Screen-fixed anchors ("bottom-left", …) are
+ * Where an effect appears for a given anchor. Hand and face anchors are already in screen space;
+ * hands fall back to visible hands, then the center; the face falls back to the center. Screen-fixed anchors ("bottom-left", …) are
  * defined in Output space, what the call sees; a mirrored view flips them.
  */
 export function resolveAnchors(anchor: Anchor, ctx: EffectContext, w: number, h: number, mirror = false): AnchorPoint[] {
-  if (mirror && anchor !== 'hand' && anchor !== 'between-hands') {
+  if (mirror && anchor !== 'hand' && anchor !== 'between-hands' && anchor !== 'face') {
     return resolveAnchors(anchor, ctx, w, h).map((p) => ({ x: w - p.x, y: p.y, angle: Math.PI - p.angle }))
   }
   const center = { x: w / 2, y: h / 2 }
@@ -36,6 +36,10 @@ export function resolveAnchors(anchor: Anchor, ctx: EffectContext, w: number, h:
       ]
     case 'center':
       return [{ ...center, angle: UP }]
+    case 'face': {
+      const f = ctx.face
+      return [{ ...(f ? { x: f.x + f.width / 2, y: f.y + f.height / 2 } : center), angle: UP }]
+    }
     case 'top-left':
       return [{ x: 0, y: 0, angle: Math.PI / 4 }]
     case 'top-right':

@@ -14,6 +14,10 @@
     "explosion_clip": { "type": "clip", "file": "explosion.webm", "layer": "back", "anchor": "bottom-left", "scale": 0.8 },
     "shake": { "type": "cameraMove", "kind": "shake", "intensity": 0.8, "durationMs": 600 },
     "confetti_cannons": { "type": "particles", "preset": "confetti", "anchor": "bottom-corners", "count": 260 },
-    "hearts_between_hands": { "type": "particles", "preset": "hearts", "anchor": "between-hands", "count": 60 }
+    "hearts_between_hands": { "type": "particles", "preset": "hearts", "anchor": "between-hands", "count": 60 },
+    "greenscreen_test": { "type": "clip", "file": "explosion_greenscreen.mp4", "key": true, "layer": "back", "anchor": "center", "scale": 0.9 },
+    "grade_noway": { "type": "cameraMove", "kind": "grade", "saturation": 0, "vignette": 0.7, "durationMs": 1500, "fadeMs": 250 },
+    "grade_gold": { "type": "cameraMove", "kind": "grade", "saturation": 1.1, "tint": "#ffb340", "tintAmount": 0.45, "vignette": 0.4, "durationMs": 3000, "fadeMs": 400 },
+    "zoom_face": { "type": "cameraMove", "kind": "zoom", "target": "face", "amount": 1.6, "durationMs": 1500 }
   }
 }

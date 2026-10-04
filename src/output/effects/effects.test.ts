@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { clipAlignment, resolveAnchors } from './anchors'
 import { cameraTransform, type ActiveMove } from './cameraMove'
+import { keySettings } from './clipKey'
+import { ConfigSchema } from '../../shared/config'
 import { spawnBurst, stepParticle, PRESETS } from './particleSim'
 
 const W = 1280
 const H = 720
 
 describe('resolveAnchors', () => {
+  it('puts face anchors at the face box centre, falling back to the frame centre', () => {
+    const face = { x: 500, y: 100, width: 200, height: 240 }
+    expect(resolveAnchors('face', { hands: [], face }, W, H)[0]).toMatchObject({ x: 600, y: 220 })
+    // Already in screen space: a mirrored view must not flip it again.
+    expect(resolveAnchors('face', { hands: [], face }, W, H, true)[0]).toMatchObject({ x: 600, y: 220 })
+    expect(resolveAnchors('face', { hands: [] }, W, H)[0]).toMatchObject({ x: 640, y: 360 })
+  })
+
   it('uses the trigger position for hand anchors', () => {
     expect(resolveAnchors('hand', { position: { x: 900, y: 300 }, hands: [] }, W, H)).toEqual([{ x: 900, y: 300, angle: -Math.PI / 2 }])
   })
@@ -83,5 +93,26 @@ describe('resolveAnchors with a mirrored view (review fix: one mirror flag)', ()
   it('flips clip alignment', () => {
     expect(clipAlignment('bottom-left', true)).toEqual({ x: 1, y: 1 })
     expect(clipAlignment('bottom-left', false)).toEqual({ x: 0, y: 1 })
+  })
+})
+
+describe('keySettings', () => {
+  const clip = (extra: object) => {
+    const cfg = ConfigSchema.parse({ words: ['boom'], rules: [], effects: { c: { type: 'clip', file: 'a.mp4', ...extra } } }).effects['c']!
+    if (cfg.type !== 'clip') throw new Error('not a clip')
+    return cfg
+  }
+
+  it('does not key by default (alpha WebM, or an MP4 without key settings)', () => {
+    expect(keySettings(clip({}))).toBeNull()
+  })
+
+  it('keys pure green when "key": true, with the configured tolerances', () => {
+    expect(keySettings(clip({ key: true, similarity: 0.3 }))).toEqual({ keyColor: '#00ff00', similarity: 0.3, smoothness: 0.08, spill: 0.6 })
+  })
+
+  it('keys a given colour, and "key": false always wins', () => {
+    expect(keySettings(clip({ keyColor: '#0000ff' }))?.keyColor).toBe('#0000ff')
+    expect(keySettings(clip({ key: false, keyColor: '#0000ff' }))).toBeNull()
   })
 })

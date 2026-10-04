@@ -1,7 +1,9 @@
-import { type Container, Sprite, Texture, VideoSource } from 'pixi.js'
+import { type Container, type Filter, Sprite, Texture, VideoSource } from 'pixi.js'
 import type { EffectConfig } from '../../shared/config'
 import type { EffectContext } from '../../shared/types'
+import { createChromaKey } from '../render/chromaKey'
 import { clipAlignment, resolveAnchors } from './anchors'
+import { keySettings } from './clipKey'
 
 type ClipConfig = Extract<EffectConfig, { type: 'clip' }>
 
@@ -14,15 +16,19 @@ interface LoadedClip {
   state: 'loading' | 'ready' | 'missing'
   /** A trigger that arrived while loading; played once the clip is ready. */
   pending?: () => void
+  /** Bumped on every play, so a stale play() rejection can't stop a newer playback. */
+  token: number
 }
 
 /**
  * Plays clips from effects/clips/ (served as skillcam://clips/<file>). Alpha WebM plays
- * natively; green-screen MP4 keying arrives with the chroma-key filter in Phase 3.
+ * natively; green-screen MP4s are keyed on the GPU when the effect asks for it (`key`/`keyColor`).
  */
 export class ClipEngine {
   private readonly clips = new Map<string, LoadedClip>()
   private playing: { clip: LoadedClip; sprite: Sprite }[] = []
+  /** One chroma-key filter per distinct key setting. */
+  private readonly keyFilters = new Map<string, Filter>()
 
   constructor(
     private readonly layers: { back: Container; front: Container },
@@ -46,7 +52,8 @@ export class ClipEngine {
       const clip: LoadedClip = {
         video,
         texture: new Texture({ source: new VideoSource({ resource: video, autoPlay: false, updateFPS: 0 }) }),
-        state: 'loading'
+        state: 'loading',
+        token: 0
       }
       video.addEventListener(
         'canplaythrough',
@@ -88,15 +95,30 @@ export class ClipEngine {
     sprite.width = sprite.height * aspect
     sprite.anchor.set(align.x, align.y)
     sprite.position.set(at!.x, at!.y)
+    const key = keySettings(cfg)
+    if (key) sprite.filters = [this.keyFilter(key)]
     this.layers[cfg.layer].addChild(sprite)
     this.playing.push({ clip, sprite })
 
+    const token = ++clip.token
     clip.video.currentTime = 0
     clip.video.onended = () => this.stop(clip)
     clip.video.play().catch((err: unknown) => {
+      // A re-trigger interrupts the previous play() with an AbortError; that one must not stop the new playback.
+      if (token !== clip.token) return
       console.warn(`[clip] ${cfg.file} failed to play`, err)
       this.stop(clip)
     })
+  }
+
+  private keyFilter(key: NonNullable<ReturnType<typeof keySettings>>): Filter {
+    const id = `${key.keyColor}|${key.similarity}|${key.smoothness}|${key.spill}`
+    let filter = this.keyFilters.get(id)
+    if (!filter) {
+      filter = createChromaKey(key)
+      this.keyFilters.set(id, filter)
+    }
+    return filter
   }
 
   private stop(clip: LoadedClip): void {

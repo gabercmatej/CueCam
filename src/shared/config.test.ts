@@ -68,13 +68,49 @@ describe('parseConfig', () => {
 
   it('defaults the performance section and validates it', () => {
     const r = parse(valid)
-    expect(r.ok && r.config.performance).toEqual({ trackEvery: 2, adaptive: true, trackerDelegate: 'GPU' })
+    expect(r.ok && r.config.performance).toEqual({
+      trackEvery: 2,
+      adaptive: true,
+      trackerDelegate: 'GPU',
+      segmentation: true,
+      segmentEvery: 2,
+      segmentDelegate: 'GPU',
+      faceDetection: true,
+      perceptionWorkers: 1
+    })
     expect(parse({ ...valid, performance: { trackEvery: 1 } })).toMatchObject({ ok: true, config: { performance: { trackEvery: 1, adaptive: true, trackerDelegate: 'GPU' } } })
+    expect(parse({ ...valid, performance: { perceptionWorkers: 3 } }).ok).toBe(false)
     expect(parse({ ...valid, performance: { trackEvery: 9 } }).ok).toBe(false)
   })
 
   it('rejects combo windows over 10 s', () => {
     const rules = [{ when: { word: 'fire', gesture: 'PalmPush', withinMs: 10_001 }, play: 'shake' }]
     expect(parse({ ...valid, rules }).ok).toBe(false)
+  })
+
+  it('defaults the video section to 1080p and the first real camera', () => {
+    const r = parse(valid)
+    expect(r.ok && r.config.video).toEqual({ outputHeight: 1080 })
+    expect(parse({ ...valid, video: { outputHeight: 900 } }).ok).toBe(false)
+  })
+
+  it('accepts chroma-key and grade settings and validates colours', () => {
+    const effects = {
+      ...valid.effects,
+      green: { type: 'clip', file: 'boom.mp4', keyColor: '#00ff00' },
+      noway: { type: 'cameraMove', kind: 'grade', saturation: 0, vignette: 0.7, durationMs: 1500 },
+      zoomFace: { type: 'cameraMove', kind: 'zoom', target: 'face' }
+    }
+    const r = parse({ ...valid, effects })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.config.effects['green']).toMatchObject({ keyColor: '#00ff00', similarity: 0.4, smoothness: 0.08, spill: 0.6 })
+    expect(r.config.effects['noway']).toMatchObject({ kind: 'grade', saturation: 0, tintAmount: 0, vignette: 0.7, fadeMs: 250 })
+    expect(parse({ ...valid, effects: { ...effects, green: { type: 'clip', file: 'a.mp4', keyColor: 'green' } } }).ok).toBe(false)
+  })
+
+  it('accepts the face anchor', () => {
+    const effects = { ...valid.effects, f: { type: 'particles', preset: 'sparks', anchor: 'face' } }
+    expect(parse({ ...valid, effects }).ok).toBe(true)
   })
 })

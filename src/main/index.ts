@@ -1,12 +1,12 @@
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, ipcMain, net, powerSaveBlocker, protocol, session, systemPreferences } from 'electron'
+import { app, BrowserWindow, ipcMain, net, powerSaveBlocker, protocol, screen, session, systemPreferences } from 'electron'
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
 import { ConfigState } from './configState'
 
-const OUTPUT_WIDTH = 1280
-const OUTPUT_HEIGHT = 720
+/** Output size in real pixels for `video.outputHeight` (16:9). */
+const outputPixels = (height: 1080 | 720): { width: number; height: number } => ({ width: (height * 16) / 9, height })
 /** window.open name the Output page uses for the Control window (src/control/panel.ts). */
 const CONTROL_WINDOW_NAME = 'skillcam-control'
 
@@ -89,15 +89,24 @@ function hardenContents(contents: Electron.WebContents, name: string): void {
 }
 
 /**
- * The Output window: exactly 1280×720, frameless, canvas only. OBS captures it by its title.
- * Its page drives the Control window too: it opens it with window.open (same origin, same
- * renderer process), so one camera and one tracker serve both windows.
+ * Window size in points so that it holds exactly `px` real pixels on this display: on a Retina
+ * screen 1920×1080 px is a 960×540 pt window. OBS window capture grabs real pixels, so this is
+ * what makes the capture 1:1 instead of an upscaled canvas.
  */
-function createOutputWindow(): BrowserWindow {
+function pointsFor(px: { width: number; height: number }, scaleFactor: number): { width: number; height: number } {
+  return { width: Math.round(px.width / scaleFactor), height: Math.round(px.height / scaleFactor) }
+}
+
+/**
+ * The Output window: exactly 1920×1080 (or 1280×720) real pixels, frameless, canvas only. OBS
+ * captures it by its title. Its page drives the Control window too: it opens it with window.open
+ * (same origin, same renderer process), so one camera and one tracker serve both windows.
+ */
+function createOutputWindow(px: { width: number; height: number }): BrowserWindow {
+  const size = pointsFor(px, screen.getPrimaryDisplay().scaleFactor)
   const win = new BrowserWindow({
     title: 'Skillcam Output',
-    width: OUTPUT_WIDTH,
-    height: OUTPUT_HEIGHT,
+    ...size,
     useContentSize: true,
     resizable: false,
     maximizable: false,
@@ -111,7 +120,33 @@ function createOutputWindow(): BrowserWindow {
     webPreferences: { preload: join(import.meta.dirname, '../preload/index.cjs'), ...SECURE_PREFERENCES }
   })
 
-  win.once('ready-to-show', () => win.show())
+  // Moved to a display with another scale factor (e.g. Retina laptop ↔ 1× monitor): keep the real pixel count.
+  const refit = (): void => {
+    const display = screen.getDisplayMatching(win.getBounds())
+    const want = pointsFor(px, display.scaleFactor)
+    const [w, h] = win.getContentSize()
+    if (w !== want.width || h !== want.height) {
+      win.setContentSize(want.width, want.height)
+      const [gw, gh] = win.getContentSize()
+      if (gw !== want.width || gh !== want.height) {
+        // macOS keeps windows inside the screen: on a 1× 1080p monitor a 1920×1080 pt window doesn't fit.
+        console.warn(
+          `[output] window clamped to ${gw}×${gh} pt (wanted ${want.width}×${want.height} pt for ${px.width}×${px.height} px at ${display.scaleFactor}×): ` +
+            'OBS will capture fewer pixels. Move the window to the Retina display or set video.outputHeight to 720.'
+        )
+      } else {
+        console.log(`[output] window ${want.width}×${want.height} pt for ${px.width}×${px.height} px`)
+      }
+    }
+  }
+  win.once('ready-to-show', () => {
+    // The first size used the primary display's scale; the window may have opened on another one.
+    refit()
+    win.show()
+  })
+  win.on('moved', refit)
+  screen.on('display-metrics-changed', refit)
+  win.on('closed', () => screen.off('display-metrics-changed', refit))
   // The page title must stay "Skillcam Output" for OBS's window list.
   win.on('page-title-updated', (event) => event.preventDefault())
   hardenContents(win.webContents, 'output')
@@ -125,7 +160,7 @@ function createOutputWindow(): BrowserWindow {
       overrideBrowserWindowOptions: {
         title: 'Skillcam Control',
         width: 664,
-        height: 640,
+        height: 780,
         x: (x ?? 0) + 40,
         y: (y ?? 0) + 40,
         backgroundColor: '#111214',
@@ -171,10 +206,12 @@ void app.whenReady().then(async () => {
   await requestMediaAccess()
   // App Nap would throttle the whole app while the call app is in front.
   powerSaveBlocker.start('prevent-app-suspension')
-  createOutputWindow()
+  // Read at startup: the renderer sizes its canvas from the same value.
+  const px = outputPixels(config.current.ok ? config.current.config.video.outputHeight : 1080)
+  createOutputWindow(px)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createOutputWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createOutputWindow(px)
   })
 })
 

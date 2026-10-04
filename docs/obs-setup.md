@@ -1,6 +1,8 @@
 # OBS setup (macOS): Skillcam into FaceTime / WhatsApp
 
-Skillcam renders the call video into a window titled **Skillcam Output** (1280×720, frameless, no UI). OBS captures that window and republishes it as **OBS Virtual Camera**, which call apps can select like a webcam.
+Skillcam renders the call video into a window titled **Skillcam Output** (exactly 1920×1080 real pixels, frameless, no UI). OBS captures that window and republishes it as **OBS Virtual Camera**, which call apps can select like a webcam.
+
+**Image quality chain:** camera at its native 1920×1080 / 30 fps → Skillcam draws it 1:1 into a 1920×1080 canvas → OBS captures exactly those pixels → OBS Virtual Camera at 1920×1080 → the call app. Nothing in that chain should scale. The call app still compresses the video for the network, so the far side never sees quite the raw camera, but each step before it is now lossless in size.
 
 One-time setup takes about 5 minutes. Tested path: OBS Studio 30+ on macOS 14/15.
 
@@ -13,9 +15,14 @@ One-time setup takes about 5 minutes. Tested path: OBS Studio 30+ on macOS 14/15
 ## 2. Match the canvas to Skillcam
 
 Settings → Video:
-- **Base (Canvas) Resolution:** 1280x720
-- **Output (Scaled) Resolution:** 1280x720
-- **Common FPS Values:** 30
+- **Base (Canvas) Resolution:** 1920x1080
+- **Output (Scaled) Resolution:** 1920x1080 (the same: no scaling, so the downscale filter never applies)
+- **Common FPS Values:** 30 (the camera's rate; 60 would only duplicate frames)
+
+Settings → Advanced → Video (the defaults, check they weren't changed):
+- **Color Format:** NV12 · **Color Space:** Rec. 709 · **Color Range:** Limited
+
+If Skillcam is set to `"video": { "outputHeight": 720 }` (a slower Mac), use 1280x720 for both resolutions instead.
 
 ## 3. Add the Skillcam Output window
 
@@ -25,9 +32,11 @@ Settings → Video:
 4. Untick **Show Window Shadow** if the option is there. Leave **Hide cursor** ticked.
 5. Click OK.
 
-**Fit and crop:**
-- On a Retina Mac the window is captured at 2× (2560×1440). Right-click the source → **Transform → Fit to Screen** (⌘F). It should fill the canvas exactly, with no black bars.
+**Check the size, don't scale:**
+- The window is sized so it holds exactly 1920×1080 real pixels on the display it's on (a 960×540 pt window on a Retina screen; it re-sizes itself if you drag it to a non-Retina monitor). The source should fill the 1920×1080 canvas exactly at 100%: right-click the source → **Transform → Edit Transform** should show size 1920×1080 and scale 1.0. If it doesn't, use **Transform → Reset Transform** rather than stretching it.
+- Older setups (from Phase 2) had the source scaled with "Fit to Screen". Reset that transform: the old 1280×720 canvas was captured at 2560×1440 and scaled down, which blurred it.
 - If an edge shows a sliver of desktop or a title-bar line, hold ⌥ and drag that edge of the source inward to crop it. Or use right-click → Transform → Edit Transform → Crop.
+- On a 1× (non-Retina) monitor the window is 1920×1080 points, larger than many screens. Keep it on the Retina display, or set `outputHeight` to 720.
 - Don't flip or mirror the source. The Output is deliberately unmirrored, so text reads correctly to the other side. Call apps mirror only your own self-view.
 
 The Output window can sit behind other windows; OBS still captures it. Don't minimize it, though: a minimized window stops rendering.
@@ -47,6 +56,8 @@ The Output window can sit behind other windows; OBS still captures it. Don't min
 - **WhatsApp (Mac app):** during a video call, click the camera options (⌄ or ⋯ next to the camera button) → **OBS Virtual Camera**. Or go to Settings → Calls/Video → Camera beforehand.
 - Use **headphones**, so the other person's voice can't trigger your speech words.
 
+**Skillcam never uses OBS Virtual Camera as its own input.** macOS lists it first once OBS is installed, so the system default camera is OBS's output, a feedback loop of re-encoded frames. Skillcam picks the first real camera instead and logs which one (`[camera] "MacBook Air Camera" granted 1920×1080 @ 30 fps`). To choose another camera, set part of its name in `skillcam.config.json`: `"video": { "camera": "iPhone" }`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -56,4 +67,6 @@ The Output window can sit behind other windows; OBS still captures it. Don't min
 | Picture frozen while the call app is in front | Make sure the Output window isn't minimized. Skillcam disables Chromium's occlusion throttling and App Nap; if it still freezes, report it with the Control window's numbers. |
 | No "OBS Virtual Camera" in the call app | The extension isn't approved yet (step 4.2), or the call app was open before the camera started: quit it fully (⌘Q) and reopen. |
 | Picture looks mirrored to the other person | It shouldn't be. Check that the OBS source has no flip transform. FaceTime's self-view is mirrored only on your side. |
-| Laggy / low fps | Watch the Control window: render fps, per-stage ms and the quality level. Skillcam steps quality down by itself under load. OBS at 1280×720 / 30 fps keeps capture cheap. |
+| Laggy / low fps | Watch the Control window: render fps, per-stage ms and the quality level. Skillcam steps quality down by itself under load. OBS at 1920×1080 / 30 fps with no scaling keeps capture cheap. |
+| Picture soft or blurry | The OBS source is scaled: Transform → Reset Transform (it should be 1920×1080 at scale 1.0), and Base = Output resolution. Check the Skillcam log line `[camera] … granted 1920×1080`: if the camera granted less, it's the camera's limit. |
+| Skillcam shows the OBS picture, or a mirror-in-mirror | Skillcam picked OBS Virtual Camera as its input. It shouldn't; set `"video": { "camera": "MacBook" }` (or your camera's name) and restart. |

@@ -16,6 +16,9 @@ fetch https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture
   "$MP/gesture_recognizer.task"
 fetch https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite \
   "$MP/blaze_face_short_range.tflite"
+# Landscape selfie model: 256×144 input, matches the 16:9 camera (the square one wastes half its input on padding).
+fetch https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite \
+  "$MP/selfie_segmenter_landscape.tflite"
 
 # MediaPipe WASM runtime ships inside the npm package; copy it next to the models.
 cp -R node_modules/@mediapipe/tasks-vision/wasm/. "$MP/wasm/"

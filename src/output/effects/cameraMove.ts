@@ -2,6 +2,7 @@ import type { Container } from 'pixi.js'
 import type { EffectConfig } from '../../shared/config'
 import type { EffectContext, Point } from '../../shared/types'
 import { resolveAnchors } from './anchors'
+import { type ActiveGrade, combineGrades, type Grade, hexToRgb, NEUTRAL_GRADE } from './grade'
 
 type CameraMoveConfig = Extract<EffectConfig, { type: 'cameraMove' }>
 
@@ -64,24 +65,52 @@ export function cameraTransform(moves: ActiveMove[], now: number, rand: () => nu
   return { scale: Math.max(scale, shakeScale), focus, offset, rotation }
 }
 
-/** Applies shake/zoom to the scene container (camera + effect layers move together). */
+/** Removes finished entries in place (the render loop must not allocate). */
+function dropExpired(list: { start: number; durationMs: number }[], now: number): void {
+  let kept = 0
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i]!
+    if (now - m.start < m.durationMs) list[kept++] = m
+  }
+  list.length = kept
+}
+
+/**
+ * Applies shake/zoom to the scene container (camera + effect layers move together) and the
+ * colour grade (camera saturation/tint + vignette), each animating in and out.
+ */
 export class CameraMoves {
-  private moves: ActiveMove[] = []
+  private readonly moves: ActiveMove[] = []
+  private readonly grades: ActiveGrade[] = []
+  private readonly grade: Grade = { ...NEUTRAL_GRADE, tint: [1, 1, 1] }
+  private gradeActive = false
 
   constructor(
     private readonly scene: Container,
     private readonly width: number,
-    private readonly height: number
+    private readonly height: number,
+    private readonly setGrade: (grade: Grade) => void
   ) {}
 
   play(cfg: CameraMoveConfig, ctx: EffectContext, now: number): void {
+    if (cfg.kind === 'grade') {
+      const target = { saturation: cfg.saturation, tint: hexToRgb(cfg.tint), tintAmount: cfg.tintAmount, vignette: cfg.vignette }
+      this.grades.push({ start: now, durationMs: cfg.durationMs, fadeMs: cfg.fadeMs, target })
+      return
+    }
     const center = { x: this.width / 2, y: this.height / 2 }
-    const focus = cfg.kind === 'zoom' && cfg.target === 'hand' ? resolveAnchors('hand', ctx, this.width, this.height)[0]! : center
+    const focus = cfg.kind === 'zoom' && cfg.target !== 'center' ? resolveAnchors(cfg.target, ctx, this.width, this.height)[0]! : center
     this.moves.push({ kind: cfg.kind, start: now, durationMs: cfg.durationMs, intensity: cfg.intensity, amount: cfg.amount, focus })
   }
 
   update(now: number): void {
-    this.moves = this.moves.filter((m) => now - m.start < m.durationMs)
+    if (this.grades.length > 0 || this.gradeActive) {
+      dropExpired(this.grades, now)
+      this.setGrade(combineGrades(this.grades, now, this.grade))
+      // One more neutral update after the last grade ends, then idle.
+      this.gradeActive = this.grades.length > 0
+    }
+    dropExpired(this.moves, now)
     const t = cameraTransform(this.moves, now, Math.random)
     this.scene.pivot.set(t.focus.x, t.focus.y)
     this.scene.position.set(t.focus.x + t.offset.x, t.focus.y + t.offset.y)

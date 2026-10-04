@@ -50,4 +50,14 @@ export interface EffectContext {
   position?: Point
   /** Palm centers of the hands currently visible, in screen space. */
   hands: Point[]
+  /** The face box in screen space (held for a moment while the face is covered), if known. */
+  face?: ScreenBox
+}
+
+/** A box in output pixels (already mirrored if the view is). */
+export interface ScreenBox {
+  x: number
+  y: number
+  width: number
+  height: number
 }

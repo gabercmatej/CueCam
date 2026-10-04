@@ -29,10 +29,11 @@ function makeTextures(renderer: Renderer): Record<ParticleTexture, Texture> {
     .bezierCurveTo(32, 12, 28, 20, 16, 29)
     .fill(0xffffff)
   const dot = new Graphics().circle(8, 8, 8).fill({ color: 0xffffff, alpha: 0.35 }).circle(8, 8, 4).fill(0xffffff)
+  // Rendered at 2× so particles stay crisp at the 1080p output resolution (1.5 px per stage unit).
   return {
-    rect: renderer.generateTexture(rect),
-    heart: renderer.generateTexture(heart),
-    dot: renderer.generateTexture(dot)
+    rect: renderer.generateTexture({ target: rect, resolution: 2 }),
+    heart: renderer.generateTexture({ target: heart, resolution: 2 }),
+    dot: renderer.generateTexture({ target: dot, resolution: 2 })
   }
 }
 
