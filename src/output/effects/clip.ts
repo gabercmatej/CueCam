@@ -39,9 +39,17 @@ export class ClipEngine {
     private readonly onMissing: (cfg: ClipConfig, ctx: EffectContext) => void
   ) {}
 
-  /** Preloads every clip the config references (BUILD_PLAN §8: preload on startup). */
+  /** Bumped per file when it changes on disk, so the new URL bypasses Chromium's cache. */
+  private readonly versions = new Map<string, number>()
+
+  /**
+   * Preloads every clip the config references (BUILD_PLAN §8: preload on startup). Clips that failed
+   * before are retried (the file may exist now); clips no longer referenced are unloaded.
+   */
   preload(files: string[]): void {
-    for (const file of files) {
+    const want = new Set(files)
+    for (const [file, clip] of this.clips) if (!want.has(file) || clip.state === 'missing') this.unload(file)
+    for (const file of want) {
       if (this.clips.has(file)) continue
       const video = document.createElement('video')
       video.muted = true
@@ -65,12 +73,47 @@ export class ClipEngine {
         { once: true }
       )
       video.addEventListener('error', () => {
+        // Unloading empties the src, which also reports an error.
+        if (this.clips.get(file) !== clip) return
         clip.state = 'missing'
         console.warn(`[clip] cannot load effects/clips/${file} (${video.error?.message ?? 'not found'})`)
       })
-      video.src = `skillcam://clips/${encodeURIComponent(file)}`
+      const v = this.versions.get(file)
+      video.src = `skillcam://clips/${encodeURIComponent(file)}${v ? `?v=${v}` : ''}`
       this.clips.set(file, clip)
     }
+  }
+
+  /** These files changed on disk: unload them; the next preload loads the new content. */
+  invalidate(files: readonly string[]): void {
+    for (const file of files) {
+      // A new URL whether or not it is loaded now, so Chromium never serves the old bytes later.
+      this.unload(file)
+      this.versions.set(file, (this.versions.get(file) ?? 0) + 1)
+    }
+  }
+
+  /** Files that failed to load (for the Control window). */
+  get missing(): string[] {
+    return [...this.clips].filter(([, c]) => c.state === 'missing').map(([f]) => f)
+  }
+
+  /** Disarmed: stop every clip now. */
+  windDown(): void {
+    // A trigger still waiting for its file to load must not play after the disarm.
+    for (const clip of this.clips.values()) clip.pending = undefined
+    while (this.playing.length) this.stop(this.playing[0]!.clip)
+  }
+
+  private unload(file: string): void {
+    const clip = this.clips.get(file)
+    if (!clip) return
+    this.stop(clip)
+    this.clips.delete(file)
+    clip.pending = undefined
+    clip.video.removeAttribute('src')
+    clip.video.load()
+    clip.texture.destroy(true)
   }
 
   play(cfg: ClipConfig, ctx: EffectContext): void {

@@ -8,6 +8,8 @@ export interface SpottedWord {
   latencyMs: number | null
   /** Final results only: a partial result already reported this occurrence. */
   seenInPartial: boolean
+  /** Final results only: silence after the word until the next token (Infinity = it ended the utterance). */
+  gapAfterMs: number | null
 }
 
 const normalize = (w: string): string => w.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -43,7 +45,7 @@ export class WordSpotter {
     for (const word of this.words) {
       const seen = countOccurrences(text, word)
       const already = this.fired.get(word) ?? 0
-      for (let i = already; i < seen; i++) out.push({ word, partial: true, confidence: 1, latencyMs: null, seenInPartial: false })
+      for (let i = already; i < seen; i++) out.push({ word, partial: true, confidence: 1, latencyMs: null, seenInPartial: false, gapAfterMs: null })
       if (seen > already) this.fired.set(word, seen)
     }
     return out
@@ -54,7 +56,7 @@ export class WordSpotter {
     for (const word of this.words) {
       const seen = this.fired.get(word) ?? 0
       matchWords(result, [word], clock, now).forEach((h, i) =>
-        out.push({ word, partial: false, confidence: h.confidence, latencyMs: h.latencyMs, seenInPartial: i < seen })
+        out.push({ word, partial: false, confidence: h.confidence, latencyMs: h.latencyMs, seenInPartial: i < seen, gapAfterMs: h.gapAfterMs })
       )
     }
     this.fired.clear()

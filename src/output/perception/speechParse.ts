@@ -16,6 +16,8 @@ export interface WordHit {
   word: string
   confidence: number
   latencyMs: number
+  /** Silence after the match until the next token ([unk] included), ms; Infinity if it ends the utterance. */
+  gapAfterMs: number
 }
 
 const normalize = (w: string): string => w.trim().toLowerCase()
@@ -62,7 +64,8 @@ export class AudioClock {
 
 /**
  * Finds trigger words/phrases in a final Vosk result. Phrases match consecutive
- * tokens; confidence is the weakest token, latency runs from the end of the last token.
+ * tokens; confidence is the weakest token, latency runs from the end of the last token, and the gap
+ * runs from there to the start of the next token.
  */
 export function matchWords(result: VoskResult, words: string[], clock: AudioClock, now: number): WordHit[] {
   const tokens = result.result ?? []
@@ -72,10 +75,13 @@ export function matchWords(result: VoskResult, words: string[], clock: AudioCloc
     for (let i = 0; i + parts.length <= tokens.length; i++) {
       const span = tokens.slice(i, i + parts.length)
       if (!span.every((t, k) => normalize(t.word) === parts[k])) continue
+      const end = span[span.length - 1]!.end
+      const next = tokens[i + parts.length]
       hits.push({
         word: target,
         confidence: Math.min(...span.map((t) => t.conf)),
-        latencyMs: now - clock.wallTimeAt(span[span.length - 1]!.end)
+        latencyMs: now - clock.wallTimeAt(end),
+        gapAfterMs: next ? Math.max(0, (next.start - end) * 1000) : Infinity
       })
     }
   }

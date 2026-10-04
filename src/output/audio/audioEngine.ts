@@ -71,6 +71,14 @@ export class AudioEngine {
   /** Audio clock → performance.now, so a sound is stamped when it happened, not when its message arrived. */
   private readonly clock = new ClockOffset()
   private monitor: { ctx: SinkContext; gain: GainNode; tap: MediaStreamAudioDestinationNode } | null = null
+  /** Effect sounds playing now, so disarming can fade them out. */
+  private readonly playing = new Set<GainNode>()
+  /** Bumped by fadeOutSounds: a sound still decoding when it ran must not start afterwards. */
+  private soundGeneration = 0
+  /** The local output's device id ('' = system default) and whether it is the call device itself. */
+  private local = { id: '', isCallDevice: false }
+  /** The arm/disarm cue's own context, on the local output only (created on first use, suspended when idle). */
+  private cue: { ctx: SinkContext; sinkId: string; idle: ReturnType<typeof setTimeout> | undefined } | null = null
 
   /** For the Control window. */
   status = {
@@ -245,6 +253,9 @@ export class AudioEngine {
       name ? outputs.find((d) => d.label.toLowerCase().includes(name.toLowerCase())) : undefined
     const local = find(s.device)
     const localId = local?.deviceId ?? ''
+    // With no device named, the local output is the system default: make sure that isn't the call device.
+    const localName = local?.label ?? outputs.find((d) => d.deviceId === 'default')?.label ?? ''
+    this.local = { id: localId, isCallDevice: !!s.call.device && localName.toLowerCase().includes(s.call.device.toLowerCase()) }
     const localLabel = local?.label ?? (s.device ? `system default ("${s.device}" not found)` : 'system default')
     const callDevice = find(s.call.device)
     const active = this.sendToCall && !!callDevice && !!this.micTrack
@@ -298,11 +309,11 @@ export class AudioEngine {
     this.monitor = null
   }
 
-  /** Fetches and decodes a sound from reactions/ (once per path). */
-  load(path: string): Promise<AudioBuffer | null> {
+  /** Fetches and decodes a sound from reactions/ (once per path, until `forget`). `url` may carry a version. */
+  load(path: string, url = mediaUrl(path)): Promise<AudioBuffer | null> {
     let buffer = this.buffers.get(path)
     if (!buffer) {
-      buffer = fetch(mediaUrl(path))
+      buffer = fetch(url)
         .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((data) => this.ctx.decodeAudioData(data))
         .catch((err: unknown) => {
@@ -314,17 +325,81 @@ export class AudioEngine {
     return buffer
   }
 
+  /** Drops a decoded sound (its file changed or no effect uses it any more); the next load fetches it again. */
+  forget(path: string): void {
+    this.buffers.delete(path)
+  }
+
+  /** Whether a sound decoded (null while loading). */
+  async loaded(path: string): Promise<boolean> {
+    return (await this.buffers.get(path)) != null
+  }
+
+  /** Fades every playing effect sound out over `ms` (disarm). Video sound goes with its video. */
+  fadeOutSounds(ms = 150): void {
+    this.soundGeneration++
+    const t = this.ctx.currentTime
+    for (const gain of this.playing) {
+      gain.gain.cancelScheduledValues(t)
+      gain.gain.setValueAtTime(gain.gain.value, t)
+      gain.gain.linearRampToValueAtTime(0, t + ms / 1000)
+    }
+  }
+
+  /**
+   * A short two-note blip for arm (rising) / disarm (falling), only on your local output: its own
+   * context, never the effect context (BlackHole while sending) or the monitor tap, so the call never
+   * hears it. Skipped if the local output is the call device itself.
+   */
+  playCue(armed: boolean): void {
+    if (this.local.isCallDevice) return
+    if (!this.cue) this.cue = { ctx: new AudioContext({ latencyHint: 'interactive' }), sinkId: '', idle: undefined }
+    const cue = this.cue
+    clearTimeout(cue.idle)
+    void (async () => {
+      if (cue.ctx.setSinkId && cue.sinkId !== this.local.id) {
+        await cue.ctx.setSinkId(this.local.id).catch((err: unknown) => console.warn('[audio] cue output', err))
+        cue.sinkId = this.local.id
+      }
+      if (cue.ctx.state === 'suspended') await cue.ctx.resume()
+      const ctx = cue.ctx
+      const notes = armed ? [660, 990] : [660, 440]
+      const t0 = ctx.currentTime + 0.01
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        const start = t0 + i * 0.09
+        gain.gain.setValueAtTime(0, start)
+        gain.gain.linearRampToValueAtTime(0.12, start + 0.008)
+        gain.gain.exponentialRampToValueAtTime(0.0005, start + 0.12)
+        osc.connect(gain).connect(ctx.destination)
+        osc.start(start)
+        osc.stop(start + 0.13)
+        osc.onended = () => gain.disconnect()
+      })
+      // An idle running context still wakes the audio thread: suspend it after the blip.
+      cue.idle = setTimeout(() => void cue.ctx.suspend(), 1000)
+    })()
+  }
+
   /** Plays a loaded sound. False if it isn't decoded (yet) or failed. */
   async play(path: string, volume: number): Promise<boolean> {
+    const generation = this.soundGeneration
     const buffer = await this.load(path)
-    if (!buffer) return false
+    if (!buffer || generation !== this.soundGeneration) return false
     if (this.ctx.state === 'suspended') void this.ctx.resume()
     const source = this.ctx.createBufferSource()
     source.buffer = buffer
     const gain = this.ctx.createGain()
     gain.gain.value = volume
     source.connect(gain).connect(this.master)
-    source.onended = () => gain.disconnect()
+    this.playing.add(gain)
+    source.onended = () => {
+      gain.disconnect()
+      this.playing.delete(gain)
+    }
     source.start()
     return true
   }
@@ -343,6 +418,12 @@ export class AudioEngine {
     }
     gain.gain.value = volume
     if (this.ctx.state === 'suspended') void this.ctx.resume()
+  }
+
+  /** A video element that will be thrown away: disconnect its sound from the graph. */
+  releaseVideo(video: HTMLMediaElement): void {
+    this.videoGains.get(video)?.disconnect()
+    this.videoGains.delete(video)
   }
 
   /**

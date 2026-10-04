@@ -1,9 +1,12 @@
-import { ControlPanel } from '../control/panel'
+import { health } from '../control/health'
+import { gestureName, ruleKey, ruleNote, ruleTrigger } from '../control/labels'
+import { ControlPanel, type Issue, type PanelState } from '../control/panel'
+import type { AppStatus, MediaChange } from '../shared/api'
 import type { Config, ConfigResult } from '../shared/config'
 import type { EffectContext, HandSide, Point, ScreenBox, TriggerEvent } from '../shared/types'
 import { AudioEngine } from './audio/audioEngine'
 import type { Onset } from './audio/clapOnset'
-import { openCamera } from './camera'
+import { LiveCamera } from './camera'
 import { FpsMeter, RollingAverage } from './debug/fpsMeter'
 import { CameraMoves } from './effects/cameraMove'
 import { ClipEngine } from './effects/clip'
@@ -65,6 +68,24 @@ function boxToScreen(b: FaceBox): ScreenBox {
   return { x: x * view.width, y: b.y * view.height, width: b.width * view.width, height: b.height * view.height }
 }
 
+/** Rules switched off in the Control window, by signature (labels.ruleKey), kept in this page's storage. */
+const DISABLED_KEY = 'skillcam.disabledRules'
+function readDisabled(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(DISABLED_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : []
+  } catch {
+    return []
+  }
+}
+function writeDisabled(keys: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(DISABLED_KEY, JSON.stringify([...keys]))
+  } catch {
+    // Not saved: the switch still applies until restart.
+  }
+}
+
 /** One perception worker, the tasks it hosts and its frame scheduler. */
 interface Pipe {
   name: string
@@ -91,6 +112,8 @@ const stage = {
   effects: new RollingAverage(60),
   render: new RollingAverage(60),
   preview: new RollingAverage(30),
+  /** The Control window's 250 ms update (state + DOM writes), not per frame. */
+  panel: new RollingAverage(20),
   work: new RollingAverage(60),
   frame: new RollingAverage(60)
 }
@@ -100,9 +123,50 @@ async function main(): Promise<void> {
   const first = await window.skillcam.getConfig()
   const startup = first.ok ? first.config : null
   const outputHeight = startup?.video.outputHeight ?? 1080
-  const video = await openCamera(startup?.video.camera)
-  const pixi = await createStage(video, view, { width: (outputHeight * 16) / 9, height: outputHeight })
+  // The Control window opens first, so a missing or blocked camera is explained there, not only in the terminal.
   let control = ControlPanel.open()
+  let appStatus: AppStatus | null = null
+  void window.skillcam.getStatus().then((st) => (appStatus = st))
+  window.skillcam.onStatus((st) => (appStatus = st))
+  // Everything that can arrive while we wait for a camera (which may take forever) is kept, not dropped:
+  // the latest config, the armed state, file changes. Their real handlers are wired once the camera works.
+  let latestConfig: ConfigResult = first
+  let onConfigReady: ((result: ConfigResult) => void) | null = null
+  window.skillcam.onConfig((result) => {
+    latestConfig = result
+    onConfigReady?.(result)
+  })
+  let armedEarly = true
+  let toggleArmed = (): void => {
+    armedEarly = !armedEarly
+  }
+  window.skillcam.onToggleArmed(() => toggleArmed())
+  let onMediaReady: ((change: MediaChange) => void) | null = null
+  window.skillcam.onMediaChanged((change) => onMediaReady?.(change))
+  const noop = (): void => {}
+  control?.on({ toggleArmed: () => toggleArmed(), test: noop, setRuleEnabled: noop, sendToCall: noop, monitorVolume: noop })
+  const cam = new LiveCamera(startup?.video.camera)
+  // Until the camera works, the panel shows only that (everything else starts after it).
+  const publishWaiting = (): void => {
+    if (!control?.visible) return
+    const h = health({
+      status: appStatus,
+      camera: { state: cam.state, problem: cam.problem, label: cam.label, fps: 0, sinceOkMs: 0 },
+      tracking: { started: false, failed: null, perSecond: 0, errors: 0 },
+      speech: { state: 'loading', error: null },
+      call: { sendToCall: false, active: false, status: 'off', micError: null }
+    })
+    const c = latestConfig
+    const configIssue: Issue[] = c.ok && !c.error ? [] : [{ level: 'error', title: 'skillcam.config.json is invalid', detail: c.error ?? '' }]
+    control.update(
+      { armed: armedEarly, hotkey: appStatus?.hotkey ?? null, health: h, issues: configIssue, last: null, gestures: '', heard: [], heardText: '', ruleProblems: new Map(), audio: { route: '', micDb: -120, mixDb: -120 } },
+      performance.now()
+    )
+  }
+  const waitingPanel = setInterval(publishWaiting, 250)
+  const video = await cam.open()
+  clearInterval(waitingPanel)
+  const pixi = await createStage(video, view, { width: (outputHeight * 16) / 9, height: outputHeight })
 
   // Effects
   const particles = new ParticleEngine(pixi.front, pixi.app.renderer, view.width, view.height, view.mirror)
@@ -134,8 +198,58 @@ async function main(): Promise<void> {
   const registry = new EffectRegistry({ particles, clips, camera, media, lightPaint })
   const triggers = new TriggerEngine()
   const latency = new GestureLatency()
-  const audioControls = { sendToCall: (on: boolean) => audio.setSendToCall(on), monitorVolume: (v: number) => audio.setMonitorVolume(v) }
-  control?.onAudio(audioControls)
+  /** Rule signatures switched off in the Control window (kept across config reloads and restarts). */
+  const disabledKeys = new Set<string>(readDisabled())
+  function setArmed(on: boolean): void {
+    if (triggers.armed === on) return
+    triggers.armed = on
+    audio.playCue(on)
+    if (!on) {
+      const now = performance.now()
+      registry.windDown(now)
+      audio.fadeOutSounds()
+    }
+    console.log(`[armed] ${on ? 'ARMED' : 'disarmed'}`)
+  }
+  triggers.armed = armedEarly
+  toggleArmed = () => setArmed(!triggers.armed)
+  const handlers = {
+    toggleArmed: () => toggleArmed(),
+    test: (i: number) => {
+      const rule = config?.rules[i]
+      if (rule) play([{ rule: i, effects: rule.play }], 'Test button')
+    },
+    setRuleEnabled: (i: number, on: boolean) => {
+      const rule = config?.rules[i]
+      if (!rule) return
+      if (on) disabledKeys.delete(ruleKey(rule))
+      else disabledKeys.add(ruleKey(rule))
+      writeDisabled(disabledKeys)
+      applyDisabled()
+      control?.setRuleStates(config?.rules.map((r) => !disabledKeys.has(ruleKey(r))) ?? [])
+    },
+    sendToCall: (on: boolean) => audio.setSendToCall(on),
+    monitorVolume: (v: number) => audio.setMonitorVolume(v)
+  }
+  control?.on(handlers)
+  /** The effects list, from the config and the switches (every row re-read, so no row can show a stale switch). */
+  function showRules(): void {
+    const cfg = config
+    if (!cfg) return
+    control?.setRules(
+      cfg.rules.map((r) => ({
+        trigger: ruleTrigger(r),
+        effects: r.play.join(' + '),
+        note: ruleNote(r, r.play.map((name) => cfg.effects[name]?.type ?? '')),
+        enabled: !disabledKeys.has(ruleKey(r))
+      }))
+    )
+  }
+  const applyDisabled = (): void => {
+    const off = new Set<number>()
+    config?.rules.forEach((r, i) => disabledKeys.has(ruleKey(r)) && off.add(i))
+    triggers.setDisabled(off)
+  }
   /** Dev: fixture hands replacing the tracker's (end-to-end latency without a person on camera). */
   let fakeHands: TrackedHandResult[] | null = null
 
@@ -219,7 +333,15 @@ async function main(): Promise<void> {
     for (const e of list.getEntries()) longTaskMs += e.duration
   }).observe({ type: 'longtask' })
   let configStatus = 'loading…'
+  let configError: string | null = null
+  let speechState: 'loading' | 'on' | 'failed' = 'loading'
+  let speechError: string | null = null
   let speechStatus = 'loading model…'
+  let trackerFailed: string | null = null
+  let trackersStarted = false
+  let lastTrigger: PanelState['last'] = null
+  const heard: { word: string; fired: boolean }[] = []
+  let heardText = ''
   let speechDecodeShare = 1
   let micPeak = 0
   let lastWord = '—'
@@ -232,23 +354,35 @@ async function main(): Promise<void> {
     console.log(`[trigger] ${line}`)
   }
 
-  function play(firings: readonly Firing[], what: string): void {
+  function play(firings: readonly Firing[], what: string, cause = what): void {
     if (firings.length === 0) return
+    const now = performance.now()
     const hands = predicted.map((h) => palmOf(h.landmarks))
-    const face = faces.get(performance.now())
+    const face = faces.get(now)
     for (const firing of firings) {
       // One context per firing: a clip that is still loading keeps it until it plays.
       const ctx: EffectContext = firing.position ? { position: firing.position, hands } : { hands }
       if (firing.hand) ctx.hand = firing.hand
       if (face) ctx.face = boxToScreen(face.box)
-      for (const name of firing.effects) registry.play(name, ctx, performance.now())
+      for (const name of firing.effects) registry.play(name, ctx, now)
       log(`${what} → ${firing.effects.join(' + ')}`)
+      const rule = config?.rules[firing.rule]
+      lastTrigger = { effects: firing.effects.join(' + '), cause: rule && firing.rule >= 0 && cause !== 'Test button' ? `${ruleTrigger(rule)} · ${cause}` : cause, at: now }
+      if (firing.rule >= 0) control?.ruleFired(firing.rule, now)
     }
+  }
+
+  /** In words: what made a rule fire. */
+  const causeOf = (event: TriggerEvent): string => {
+    if (event.type === 'gesture') return event.hand === 'Both' ? 'both hands' : `${event.hand.toLowerCase()} hand`
+    if (event.partial) return 'heard (fast)'
+    const pause = event.pauseAfterMs === undefined ? '' : Number.isFinite(event.pauseAfterMs) ? `, ${Math.round(event.pauseAfterMs)} ms pause` : ', end of phrase'
+    return `heard (final, ${event.confidence.toFixed(2)}${pause})`
   }
 
   function dispatch(event: TriggerEvent): number {
     const firings = triggers.handle(event)
-    play(firings, event.type === 'gesture' ? event.gesture : `"${event.word}"`)
+    play(firings, event.type === 'gesture' ? event.gesture : `"${event.word}"`, causeOf(event))
     return firings.length
   }
 
@@ -266,12 +400,16 @@ async function main(): Promise<void> {
   const applyConfig = (result: ConfigResult): void => {
     if (!result.ok) {
       configStatus = `ERROR (keeping last good): ${result.error.split('\n').slice(0, 2).join(' ')}`
+      configError = result.error
       console.error(`[config] ${result.error}`)
       return
     }
+    configError = result.error ?? null
     if (result.config !== config) {
       config = result.config
       triggers.setRules(config.rules, config.defaultCooldownMs)
+      applyDisabled()
+      showRules()
       gestures.setUsedGestures(new Set(config.rules.flatMap((r) => (r.when.gesture ? [r.when.gesture] : []))))
       registry.setEffects(config.effects)
       audio.configure(config.audio)
@@ -288,8 +426,13 @@ async function main(): Promise<void> {
       ? `ERROR (keeping last good): ${result.error.split('\n').slice(0, 2).join(' ')}`
       : `ok · ${config.rules.length} rules · ${Object.keys(config.effects).length} effects`
   }
-  window.skillcam.onConfig(applyConfig)
-  applyConfig(first)
+  onConfigReady = applyConfig
+  applyConfig(latestConfig)
+  // Replaced, added or removed files in reactions/ or effects/clips/ apply at once.
+  onMediaReady = (change) => {
+    console.log(`[media] changed in ${change.root}/: ${change.paths.join(', ')}`)
+    registry.filesChanged(change.root, change.paths)
+  }
 
   // Perception: each worker answers every frame it gets; hands → gestures + triggers, mask → person layer, face → anchor.
   const onPerception = (pipe: Pipe, msg: PerceptionMessage): void => {
@@ -297,7 +440,10 @@ async function main(): Promise<void> {
     if (msg.at !== undefined) pipe.scheduler.done(msg.at)
     if (msg.type === 'error') {
       trackErrors++
-      if (msg.fatal) trackerStatus = `FAILED (${pipe.name}): ${msg.message}`
+      if (msg.fatal) {
+        trackerStatus = `FAILED (${pipe.name}): ${msg.message}`
+        trackerFailed = msg.message
+      }
       console.error(`[perception] ${pipe.name}: ${msg.message}`)
       return
     }
@@ -360,11 +506,13 @@ async function main(): Promise<void> {
       if (pipe.hosts.includes('face')) models.face = { model: MODELS.face, delegate: segDelegate }
       pipe.client = await PerceptionClient.start(models, (msg) => onPerception(pipe, msg)).catch((err: unknown) => {
         trackerStatus = `FAILED (${pipe.name}): ${String(err)}`
+        trackerFailed = err instanceof Error ? err.message : String(err)
         console.error(`[perception] ${pipe.name} worker failed to start`, err)
         return null
       })
     })
   )
+  trackersStarted = true
   if (!trackerStatus.startsWith('FAILED')) {
     trackerStatus = pipes.map((p) => `${p.name}: ${(p.client?.tasks ?? []).map((t) => `${t} ${p.client?.delegates[t]}`).join(', ')}`).join(' | ')
   }
@@ -397,21 +545,43 @@ async function main(): Promise<void> {
     onLevel(peak) {
       micPeak = Math.max(peak, micPeak * 0.8)
     },
+    onText(text) {
+      heardText = text
+    },
     onWord(word, at) {
-      const stage = word.partial ? 'partial' : `final ${word.confidence.toFixed(2)}, ${Math.round(word.latencyMs ?? 0)} ms${word.seenInPartial ? ', seen' : ''}`
+      const gap = word.gapAfterMs === null ? '' : `, pause ${Number.isFinite(word.gapAfterMs) ? `${Math.round(word.gapAfterMs)} ms` : 'end'}`
+      const stage = word.partial ? 'partial' : `final ${word.confidence.toFixed(2)}, ${Math.round(word.latencyMs ?? 0)} ms${word.seenInPartial ? ', seen' : ''}${gap}`
       lastWord = `${word.word} (${stage})`
       console.log(`[speech] ${lastWord}`)
-      const fired = dispatch({ type: 'word', word: word.word, confidence: word.confidence, partial: word.partial, seenInPartial: word.seenInPartial, at })
+      const fired = dispatch({
+        type: 'word',
+        word: word.word,
+        confidence: word.confidence,
+        partial: word.partial,
+        seenInPartial: word.seenInPartial,
+        ...(word.gapAfterMs === null ? {} : { pauseAfterMs: word.gapAfterMs }),
+        at
+      })
       if (import.meta.env.DEV) wordLog.push(`${lastWord}${fired ? ' → FIRED' : ''}`)
+      // The panel lists each spoken occurrence once: partials, plus finals no partial reported.
+      if (word.partial || !word.seenInPartial) heard.push({ word: word.word, fired: fired > 0 })
+      else if (fired) {
+        const prev = heard.findLast((h) => h.word === word.word)
+        if (prev) prev.fired = true
+      }
+      if (heard.length > 6) heard.shift()
     }
   })
     .then((s) => {
       speech = s
       if (config) s.setWords(config.words, config.speech.decoys ? decoysFor(config.words) : [])
       speechStatus = 'on'
+      speechState = 'on'
     })
     .catch((err: unknown) => {
       speechStatus = 'FAILED'
+      speechState = 'failed'
+      speechError = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
       console.error('[speech] failed to start', err)
     })
 
@@ -463,6 +633,7 @@ async function main(): Promise<void> {
         }
         return [...wordLog]
       },
+      assetInfo: (path: string) => media.assetInfo(path),
       /** Mix → BlackHole reader latency, silently (see AudioEngine.measureCallLatency). */
       measureCallLatency: (runs?: number) => audio.measureCallLatency(runs),
       audio: () => ({ ...audio.status, context: audio.contextInfo, latency: audio.latency(), mixDb: audio.mixDb(), clap: clapFusion.stats, onsets: onsetCounts, lastOnset }),
@@ -615,7 +786,7 @@ async function main(): Promise<void> {
     let previewMs = 0
     if (control && frameCount % previewEvery(quality.level) === 0) {
       if (control.closed) control = null
-      else {
+      else if (control.visible) {
         const face = faces.get(now)
         control.drawPreview(pixi.app.canvas, predicted, face)
         previewMs = performance.now() - now
@@ -681,26 +852,93 @@ async function main(): Promise<void> {
     return `clap last sound: ${last} · sounds clap ${onsetCounts.clap}/quiet ${onsetCounts.quiet}/dull ${onsetCounts.dull}/long ${onsetCounts.long} · claps ${f.fused}, camera only ${f.contactOnly}, sound only ${f.soundOnly}${offset}`
   }
   let mixDb = -120
+  /** Which rules can't show their files (missing in reactions/ or effects/clips/), by rule index. */
+  const ruleProblems = new Map<number, string>()
+  function filesIssue(): Issue | null {
+    ruleProblems.clear()
+    if (!config) return null
+    const mediaProblems = media.problems()
+    const clipMissing = new Set(clips.missing)
+    const byEffect = new Map<string, string[]>()
+    for (const [name, effect] of Object.entries(config.effects)) {
+      const files = mediaProblems.get(name) ?? (effect.type === 'clip' && clipMissing.has(effect.file) ? [`effects/clips/${effect.file}`] : null)
+      if (files) byEffect.set(name, files)
+    }
+    config.rules.forEach((rule, i) => {
+      const missing = rule.play.flatMap((name) => byEffect.get(name) ?? [])
+      if (missing.length) ruleProblems.set(i, `Missing ${missing.join(', ')}`)
+    })
+    if (byEffect.size === 0) return null
+    return {
+      level: 'warn',
+      title: `${byEffect.size} effect${byEffect.size > 1 ? 's' : ''} can't find ${byEffect.size > 1 ? 'their' : 'its'} files`,
+      detail: [...byEffect].map(([name, files]) => `${name}: ${files.join(', ')}`).join('\n') + '\nAdd the files (they load at once) or fix the paths in skillcam.config.json.'
+    }
+  }
+  function panelState(now: number): PanelState {
+    const issues: Issue[] = []
+    if (configError) issues.push({ level: 'error', title: config ? 'skillcam.config.json is invalid: still using the last good version' : 'skillcam.config.json is invalid', detail: configError })
+    if (cam.warning) issues.push({ level: 'warn', title: cam.warning })
+    const files = filesIssue()
+    if (files) issues.push(files)
+    if (audio.status.mic.includes('CRASHED')) issues.push({ level: 'warn', title: 'The clap sound detector crashed: claps need the camera only until restart.' })
+    const call = audio.status
+    return {
+      armed: triggers.armed,
+      hotkey: appStatus?.hotkey ?? null,
+      health: health({
+        status: appStatus,
+        camera: { state: cam.state, problem: cam.problem, label: cam.label, fps: cameraFps.fpsAt(now), sinceOkMs: cam.state === 'ok' ? now - cam.okAt : 0 },
+        tracking: { started: trackersStarted, failed: trackerFailed, perSecond: trackFps.fpsAt(now), errors: trackErrors },
+        speech: { state: speechState, error: speechError },
+        call: { sendToCall: audio.sendingToCall, active: call.callActive, status: call.call, micError: call.mic.startsWith('FAILED') ? call.mic : null }
+      }),
+      issues,
+      last: lastTrigger,
+      gestures: labels
+        .filter((h) => h.label || h.pinching)
+        .map((h) => `${h.side}: ${h.pinching ? 'Pinch' : gestureName(h.label!)}`)
+        .join(' · '),
+      heard,
+      heardText,
+      ruleProblems,
+      audio: {
+        route: call.callActive ? `→ ${call.output.replace(/ \(Virtual\)$/, '')}` : audio.sendingToCall ? '' : `effects play on ${call.output}`,
+        micDb: call.micDb,
+        mixDb
+      }
+    }
+  }
   function publishStats(): void {
-    mixDb = audio.mixDb()
-    const q = quality.settings
-    control?.setStats([
-      `render ${renderFps.fps.toFixed(0)} fps (cap ${q.maxRenderFps}) · camera ${cameraFps.fps.toFixed(0)} fps · tracked ${trackFps.fps.toFixed(0)}/s`,
-      `quality L${quality.level}/${QUALITY_LEVELS.length - 1}: track every ${q.trackEvery} · particles ×${q.particleScale} · tracker ${trackerStatus}${trackErrors ? ` · ${trackErrors} errors` : ''}`,
-      `gesture latency ${latency.describe()} (avg total ${latency.avg.total.value.toFixed(0)} ms over ${Math.min(latency.count, 20)})`,
-      `stages ms  capture ${ms(stage.capture)} · grab ${ms(stage.grab)} · hands ${ms(stage.track)} · latency ${ms(stage.latency)} · gestures ${ms(stage.gestures)}`,
-      `           effects ${ms(stage.effects)} · render ${ms(stage.render)} · preview ${ms(stage.preview)} · main/frame ${ms(stage.work)} · interval ${ms(stage.frame)}`,
-      `worker ms  total/frame ${ms(stage.worker)} · prep ${ms(stage.prep)} · segment ${ms(stage.segment)} · face ${ms(stage.face)} · mask apply (CPU; GPU upload counts in render) ${ms(stage.mask)}`,
-      `segment ${segmentation ? `every ${quality.strides.segment} · mask ${q.mask.width}×${q.mask.height} · age ${maskAge()} · cutout ${pixi.camera.person.visible ? 'ON' : 'idle'}` : 'off'} · face ${faceStatus()}`,
-      `long tasks ${longTaskPerS.toFixed(0)} ms/s · worker busy skips ${pipes.map((p) => p.scheduler.busySkips).join('/')} · hand bursts ${burstCount} · particles ${particles.count} · media ${media.count} · painting ${lightPaint.active}`,
-      `audio → ${audio.status.output} · call ${audio.status.call} · monitor ${audio.status.monitor}`,
-      `mic ${meter(audio.status.micDb)} ${dbText(audio.status.micDb)} · mix ${meter(mixDb)} ${dbText(mixDb)} · ${audio.status.mic} · ${latencyText()}`,
-      clapSoundLine(),
-      clapLastLine(),
-      `config ${configStatus} · ${triggers.armed ? 'ARMED' : 'disarmed'}`,
-      `speech ${speechStatus} ${'█'.repeat(Math.round(micPeak * 12)).padEnd(12, '·')} decoding ${(speechDecodeShare * 100).toFixed(0)}% · last: ${lastWord}`
-    ])
-    control?.setLog(recent.map((r, i) => `${i === 0 ? 'fired' : '     '} ${r}`))
+    const now = performance.now()
+    if (control?.visible) {
+      mixDb = audio.mixDb()
+      control.update(panelState(now), now)
+    }
+    if (control?.debugOpen) {
+      const q = quality.settings
+      control.setDebug([
+        `render ${renderFps.fps.toFixed(0)} fps (cap ${q.maxRenderFps}) · camera ${cameraFps.fps.toFixed(0)} fps · tracked ${trackFps.fps.toFixed(0)}/s`,
+        `quality L${quality.level}/${QUALITY_LEVELS.length - 1}: track every ${q.trackEvery} · particles ×${q.particleScale} · tracker ${trackerStatus}${trackErrors ? ` · ${trackErrors} errors` : ''}`,
+        `gesture latency ${latency.describe()} (avg total ${latency.avg.total.value.toFixed(0)} ms over ${Math.min(latency.count, 20)})`,
+        `stages ms  capture ${ms(stage.capture)} · grab ${ms(stage.grab)} · hands ${ms(stage.track)} · latency ${ms(stage.latency)} · gestures ${ms(stage.gestures)}`,
+        `           effects ${ms(stage.effects)} · render ${ms(stage.render)} · preview ${ms(stage.preview)} · main/frame ${ms(stage.work)} · interval ${ms(stage.frame)}`,
+        `worker ms  total/frame ${ms(stage.worker)} · prep ${ms(stage.prep)} · segment ${ms(stage.segment)} · face ${ms(stage.face)} · mask apply (CPU; GPU upload counts in render) ${ms(stage.mask)}`,
+        `segment ${segmentation ? `every ${quality.strides.segment} · mask ${q.mask.width}×${q.mask.height} · age ${maskAge()} · cutout ${pixi.camera.person.visible ? 'ON' : 'idle'}` : 'off'} · face ${faceStatus()}`,
+        `long tasks ${longTaskPerS.toFixed(0)} ms/s · worker busy skips ${pipes.map((p) => p.scheduler.busySkips).join('/')} · hand bursts ${burstCount} · particles ${particles.count} · media ${media.count} · painting ${lightPaint.active}`,
+        `audio → ${audio.status.output} · call ${audio.status.call} · monitor ${audio.status.monitor}`,
+        `mic ${meter(audio.status.micDb)} ${dbText(audio.status.micDb)} · mix ${meter(mixDb)} ${dbText(mixDb)} · ${audio.status.mic} · ${latencyText()}`,
+        clapSoundLine(),
+        clapLastLine(),
+        `config ${configStatus} · ${triggers.armed ? 'ARMED' : 'disarmed'}`,
+        `speech ${speechStatus} ${'█'.repeat(Math.round(micPeak * 12)).padEnd(12, '·')} decoding ${(speechDecodeShare * 100).toFixed(0)}% · last: ${lastWord}`,
+        '',
+        `control panel update ${ms(stage.panel)} ms every ${STATS_MS} ms (not per frame)`,
+        '',
+        ...recent.map((r, i) => `${i === 0 ? 'fired' : '     '} ${r}`)
+      ])
+    }
+    if (control?.visible) stage.panel.push(performance.now() - now)
     if (import.meta.env.DEV) {
       // Text-only snapshot for dev tooling (CDP), so diagnostics never need a camera frame.
       ;(window as unknown as { __skillcam: unknown }).__skillcam = {
@@ -722,6 +960,7 @@ async function main(): Promise<void> {
           effectsMs: stage.effects.value,
           renderMs: stage.render.value,
           previewMs: stage.preview.value,
+          panelUpdateMs: stage.panel.value,
           mainWorkMs: stage.work.value,
           frameIntervalMs: stage.frame.value,
           longTaskMsPerS: longTaskPerS,
@@ -740,10 +979,13 @@ async function main(): Promise<void> {
         },
         hands: labels.map((h) => `${h.side}:${h.label}`),
         particles: particles.count,
+        media: media.count,
         configStatus,
         speechStatus,
         lastWord,
-        recent
+        recent,
+        armed: triggers.armed,
+        panel: control?.visible ? panelState(now) : null
       }
     }
   }

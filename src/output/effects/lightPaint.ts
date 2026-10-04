@@ -101,6 +101,17 @@ export class LightPaint {
     s.pen = ctx.position ? { x: ctx.position.x, y: ctx.position.y } : null
   }
 
+  /** Disarmed: every drawing starts fading out now, as if the pinch was released. */
+  windDown(now: number): void {
+    for (const s of this.strokes.values()) {
+      if (s.state !== 'drawing') continue
+      // Quickly, whatever the effect's own fade (play() restores its config).
+      if (s.cfg.fadeMs > 250) s.cfg = { ...s.cfg, fadeMs: 250 }
+      s.state = 'fading'
+      s.fadeStart = now
+    }
+  }
+
   /**
    * Per frame. `pinch(side)` is the pinch point for a hand still pinching, or null once released
    * (or the hand is gone).

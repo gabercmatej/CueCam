@@ -16,6 +16,8 @@ export interface SpeechEvents {
   onWord(word: SpottedWord, at: number): void
   /** Peak level (0–1) of each ~100 ms chunk, for the mic meter. */
   onLevel(peak: number): void
+  /** Each final transcript (decoys and [unk] included): what the recognizer heard. */
+  onText?(text: string): void
 }
 
 interface Listener {
@@ -98,7 +100,10 @@ export class SpeechInput {
     recognizer.on('result', (message) => {
       if (!('result' in message) || !('text' in message.result)) return
       const now = performance.now()
-      if (import.meta.env.DEV && message.result.text) console.log(`[speech] heard "${message.result.text}"`)
+      if (message.result.text) {
+        if (import.meta.env.DEV) console.log(`[speech] heard "${message.result.text}"`)
+        this.events.onText?.(message.result.text)
+      }
       for (const w of spotter.final(message.result as VoskResult, listener.clock, now)) this.events.onWord(w, now)
     })
 

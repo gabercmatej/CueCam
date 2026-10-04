@@ -42,7 +42,7 @@ describe('matchWords', () => {
       clock,
       2100
     )
-    expect(hits).toEqual([{ word: 'boom', confidence: 0.93, latencyMs: 600 }])
+    expect(hits).toEqual([{ word: 'boom', confidence: 0.93, latencyMs: 600, gapAfterMs: Infinity }])
   })
 
   it('matches multi-word phrases on consecutive tokens, using min confidence and last end', () => {
@@ -58,7 +58,7 @@ describe('matchWords', () => {
       clock,
       1400
     )
-    expect(hits).toEqual([{ word: "let's go", confidence: 0.8, latencyMs: 400 }])
+    expect(hits).toEqual([{ word: "let's go", confidence: 0.8, latencyMs: 400, gapAfterMs: Infinity }])
   })
 
   it('ignores [unk] and words outside the list', () => {
@@ -75,6 +75,18 @@ describe('matchWords', () => {
       1000
     )
     expect(hits).toEqual([])
+  })
+
+  it('reports the silence after a match: to the next token ([unk] counts as speech), or Infinity when last', () => {
+    const result = {
+      text: 'bye [unk] bye',
+      result: [
+        { word: 'bye', conf: 1, start: 0.1, end: 0.3 },
+        { word: '[unk]', conf: 1, start: 0.35, end: 0.6 },
+        { word: 'bye', conf: 1, start: 1.4, end: 1.6 }
+      ]
+    }
+    expect(matchWords(result, ['bye'], clock, 2000).map((h) => h.gapAfterMs)).toEqual([expect.closeTo(50, 5), Infinity])
   })
 
   it('handles results without word timings', () => {

@@ -187,4 +187,15 @@ describe('Phase 3b config', () => {
     expect(r.config.rules[1]).toMatchObject({ confirm: 'final', minConfidence: 0.8 })
     expect(parse({ ...valid, words: ['boom'], rules: [{ when: { word: 'boom' }, play: 'confetti_hand', confirm: 'maybe' }] }).ok).toBe(false)
   })
+
+  it('pauseAfterMs needs a word rule with confirm "final"', () => {
+    const base = { ...valid, words: ['bye'] }
+    const ok = parse({ ...base, rules: [{ when: { word: 'bye' }, play: 'shake', confirm: 'final', pauseAfterMs: 400 }] })
+    expect(ok).toMatchObject({ ok: true })
+    if (ok.ok) expect(ok.config.rules[0]).toMatchObject({ pauseAfterMs: 400 })
+    const partial = parse({ ...base, rules: [{ when: { word: 'bye' }, play: 'shake', pauseAfterMs: 400 }] })
+    expect(partial.ok).toBe(false)
+    if (!partial.ok) expect(partial.error).toMatch(/pauseAfterMs/)
+    expect(parse({ ...base, rules: [{ when: { gesture: 'Rock' }, play: 'shake', confirm: 'final', pauseAfterMs: 400 }] }).ok).toBe(false)
+  })
 })

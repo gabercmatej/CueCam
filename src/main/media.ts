@@ -1,5 +1,5 @@
 /** reactions/ on disk: resolving config paths (files or folders) to media files, safely inside the folder. */
-import { readdirSync, statSync } from 'node:fs'
+import { type FSWatcher, readdirSync, statSync, watch } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { isMediaFile } from '../shared/media'
 
@@ -38,3 +38,40 @@ export function resolveMedia(root: string, entries: readonly string[]): Record<s
 }
 
 const toRel = (root: string, path: string): string => relative(root, path).split(sep).join('/')
+
+/**
+ * Calls `onChange` with the paths (relative, "/" separators) that changed under `root`, batched
+ * over `debounceMs` (a copy or an editor save fires several events). Recursive: folders inside
+ * `root` count. A missing `root` is watched never (returns a no-op).
+ */
+export function watchMedia(root: string, onChange: (paths: string[]) => void, debounceMs = 300): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const changed = new Set<string>()
+  let watcher: FSWatcher
+  try {
+    watcher = watch(root, { recursive: true }, (_event, name) => {
+      if (!name) return
+      const rel = String(name).split(sep).join('/')
+      if (rel.split('/').some((part) => part.startsWith('.'))) return
+      changed.add(rel)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        const paths = [...changed]
+        changed.clear()
+        onChange(paths)
+      }, debounceMs)
+    })
+  } catch (err) {
+    console.warn(`[media] not watching ${root}: ${(err as Error).message}`)
+    return () => {}
+  }
+  // E.g. the folder itself deleted or renamed: stop watching instead of crashing main.
+  watcher.on('error', (err) => {
+    console.warn(`[media] stopped watching ${root}: ${err.message}`)
+    watcher.close()
+  })
+  return () => {
+    clearTimeout(timer)
+    watcher.close()
+  }
+}

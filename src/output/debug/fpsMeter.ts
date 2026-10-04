@@ -14,6 +14,12 @@ export class FpsMeter {
     const span = this.times[n - 1]! - this.times[0]!
     return span > 0 ? ((n - 1) * 1000) / span : 0
   }
+
+  /** The rate as of `now`: 0 once no tick arrived for a second (`fps` alone keeps the last rate forever). */
+  fpsAt(now: number): number {
+    const last = this.times[this.times.length - 1]
+    return last === undefined || now - last > 1000 ? 0 : this.fps
+  }
 }
 
 /** Mean of the last `size` samples, e.g. per-stage timings in ms. O(1) per sample, no allocations. */

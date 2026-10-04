@@ -21,6 +21,20 @@ export class EffectRegistry {
     void this.engines.media.setEffects(effects)
   }
 
+  /** Disarmed: playing effects fade out quickly. Particles, shakes and grades are short and finish on their own. */
+  windDown(now: number): void {
+    this.engines.media.windDown(now)
+    this.engines.clips.windDown()
+    this.engines.lightPaint.windDown(now)
+  }
+
+  /** Files changed on disk: drop them and reload what the current effects use. */
+  filesChanged(root: 'reactions' | 'clips', paths: readonly string[]): void {
+    if (root === 'reactions') this.engines.media.invalidate(paths)
+    else this.engines.clips.invalidate(paths)
+    this.setEffects(this.effects)
+  }
+
   has(name: string): boolean {
     return name in this.effects
   }

@@ -29,7 +29,7 @@ describe('WordSpotter', () => {
 
   it('fires on a partial as soon as a word appears', () => {
     const s = new WordSpotter(['boom'])
-    expect(s.partial('boom', 100)).toEqual([{ word: 'boom', partial: true, confidence: 1, latencyMs: null, seenInPartial: false }])
+    expect(s.partial('boom', 100)).toEqual([{ word: 'boom', partial: true, confidence: 1, latencyMs: null, seenInPartial: false, gapAfterMs: null }])
     expect(s.partial('boom', 150)).toEqual([])
   })
 
@@ -54,8 +54,8 @@ describe('WordSpotter', () => {
       2500
     )
     expect(final).toEqual([
-      { word: 'boom', partial: false, confidence: 1, latencyMs: 1200, seenInPartial: true },
-      { word: 'fire', partial: false, confidence: 0.9, latencyMs: 600, seenInPartial: false }
+      { word: 'boom', partial: false, confidence: 1, latencyMs: 1200, seenInPartial: true, gapAfterMs: expect.closeTo(200, 5) },
+      { word: 'fire', partial: false, confidence: 0.9, latencyMs: 600, seenInPartial: false, gapAfterMs: Infinity }
     ])
     expect(s.partial('boom', 3000)).toHaveLength(1)
   })

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { insideRoot, resolveMedia } from './media'
+import { insideRoot, resolveMedia, watchMedia } from './media'
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'skillcam-media-'))
@@ -30,5 +30,26 @@ describe('resolveMedia', () => {
     expect(resolveMedia(root, ['../etc'])).toEqual({ '../etc': [] })
     expect(insideRoot(root, '../x')).toBeNull()
     expect(insideRoot(root, 'rock/dog.gif')).toBe(join(root, 'rock', 'dog.gif'))
+  })
+})
+
+describe('watchMedia', () => {
+  it('reports changed files in subfolders once per batch, as relative paths, skipping hidden files', async () => {
+    const root = fixture()
+    const batches: string[][] = []
+    const stop = watchMedia(root, (paths) => batches.push(paths.sort()), 100)
+    await new Promise((r) => setTimeout(r, 100))
+    writeFileSync(join(root, 'thumbs up', 'b cat.png'), 'new content')
+    writeFileSync(join(root, 'rock', 'new.gif'), 'x')
+    writeFileSync(join(root, 'rock', '.DS_Store'), 'x')
+    await new Promise((r) => setTimeout(r, 600))
+    stop()
+    // FSEvents may also report the fixture's own files late, as an earlier batch; the two writes come together.
+    expect(batches.at(-1)).toEqual(expect.arrayContaining(['rock/new.gif', 'thumbs up/b cat.png']))
+    expect(batches.flat().some((p) => p.includes('.DS_Store'))).toBe(false)
+  })
+
+  it('is a no-op for a folder that does not exist', () => {
+    expect(() => watchMedia('/nonexistent/skillcam', () => {})()).not.toThrow()
   })
 })

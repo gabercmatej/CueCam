@@ -1,10 +1,12 @@
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, ipcMain, net, powerSaveBlocker, protocol, screen, session, systemPreferences } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, net, powerSaveBlocker, protocol, screen, session, systemPreferences } from 'electron'
+import type { AppStatus, HotkeyStatus, PermissionStatus } from '../shared/api'
 import type { ConfigResult } from '../shared/config'
 import { loadConfig, watchConfig } from './config'
 import { ConfigState } from './configState'
-import { insideRoot, resolveMedia } from './media'
+import { insideRoot, resolveMedia, watchMedia } from './media'
+import { missingAssets } from './status'
 
 /** Output size in real pixels for `video.outputHeight` (16:9). */
 const outputPixels = (height: 1080 | 720): { width: number; height: number } => ({ width: (height * 16) / 9, height })
@@ -22,6 +24,66 @@ const ROOT = app.getAppPath()
 const CONFIG_FILE = join(ROOT, 'skillcam.config.json')
 const CLIPS_DIR = join(ROOT, 'effects', 'clips')
 const REACTIONS_DIR = join(ROOT, 'reactions')
+const ASSETS_DIR = join(ROOT, 'assets')
+
+let output: BrowserWindow | null = null
+let control: BrowserWindow | null = null
+/** Set once the app is quitting, so closing the Control window really closes it (otherwise it only hides). */
+let quitting = false
+app.on('before-quit', () => (quitting = true))
+
+const status: AppStatus = {
+  permissions: { camera: 'unknown', microphone: 'unknown' },
+  missingAssets: [],
+  hotkey: { accelerator: '', registered: false, error: null }
+}
+function publishStatus(): void {
+  output?.webContents.send('status:changed', status)
+}
+
+function readPermissions(): AppStatus['permissions'] {
+  if (process.platform !== 'darwin') return { camera: 'unknown', microphone: 'unknown' }
+  return {
+    camera: systemPreferences.getMediaAccessStatus('camera') as PermissionStatus,
+    microphone: systemPreferences.getMediaAccessStatus('microphone') as PermissionStatus
+  }
+}
+
+/**
+ * The arm/disarm hotkey, system-wide (works while FaceTime or WhatsApp has focus). Re-registered when
+ * the config changes it. Registration fails if another app owns the shortcut or it isn't a valid accelerator.
+ */
+/** Holding the keys (or a bouncy press) must toggle once, not flicker. */
+let lastToggleAt = 0
+function toggleArmed(): void {
+  const now = Date.now()
+  if (now - lastToggleAt < 300) return
+  lastToggleAt = now
+  output?.webContents.send('armed:toggle')
+}
+
+/** The shortcut that is registered right now (it keeps working if a new one can't be registered). */
+let activeHotkey: string | null = null
+
+function registerHotkey(accelerator: string): HotkeyStatus {
+  if (activeHotkey === accelerator) return { accelerator, registered: true, error: null }
+  const keeps = activeHotkey ? `; ${activeHotkey} still works` : ''
+  try {
+    // The new one first: if it can't be had, the old one stays.
+    const registered = globalShortcut.register(accelerator, toggleArmed)
+    if (!registered) {
+      console.warn(`[hotkey] ${accelerator}: another app is using it${keeps}`)
+      return { accelerator, registered: false, error: `is used by another app${keeps}` }
+    }
+    if (activeHotkey) globalShortcut.unregister(activeHotkey)
+    activeHotkey = accelerator
+    console.log(`[hotkey] ${accelerator}: registered`)
+    return { accelerator, registered: true, error: null }
+  } catch (err) {
+    console.warn(`[hotkey] "${accelerator}" is not a valid shortcut: ${(err as Error).message}`)
+    return { accelerator, registered: false, error: `is not a valid shortcut (e.g. "CommandOrControl+Shift+K")${keeps}` }
+  }
+}
 
 // skillcam://clips/<file> serves effects/clips/, skillcam://media/<path> serves reactions/, in dev and packaged builds alike.
 protocol.registerSchemesAsPrivileged([
@@ -171,17 +233,27 @@ function createOutputWindow(px: { width: number; height: number }): BrowserWindo
       action: 'allow',
       overrideBrowserWindowOptions: {
         title: 'Skillcam Control',
-        width: 664,
-        height: 780,
+        width: 720,
+        height: 940,
+        minWidth: 560,
+        minHeight: 480,
         x: (x ?? 0) + 40,
         y: (y ?? 0) + 40,
-        backgroundColor: '#111214',
+        backgroundColor: '#17181a',
         webPreferences: { ...SECURE_PREFERENCES }
       }
     }
   })
   win.webContents.on('did-create-window', (child) => {
+    control = child
     child.on('page-title-updated', (event) => event.preventDefault())
+    // Closing the Control window hides it (it can't be rebuilt without reloading the Output); the Dock icon brings it back.
+    child.on('close', (event) => {
+      if (quitting) return
+      event.preventDefault()
+      child.hide()
+    })
+    child.on('closed', () => (control = null))
     child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     hardenContents(child.webContents, 'control')
   })
@@ -215,6 +287,11 @@ void app.whenReady().then(async () => {
   watchConfig(CONFIG_FILE, (result) => {
     config.update(result)
     logConfig(result)
+    // A changed hotkey, or one that failed before (the other app may have let go of it): try again.
+    if (result.ok && (result.config.hotkey !== status.hotkey.accelerator || !status.hotkey.registered)) {
+      status.hotkey = registerHotkey(result.config.hotkey)
+      publishStatus()
+    }
     for (const win of BrowserWindow.getAllWindows()) win.webContents.send('config:changed', config.current)
   })
 
@@ -223,12 +300,36 @@ void app.whenReady().then(async () => {
   powerSaveBlocker.start('prevent-app-suspension')
   // Read at startup: the renderer sizes its canvas from the same value.
   const px = outputPixels(config.current.ok ? config.current.config.video.outputHeight : 1080)
-  createOutputWindow(px)
+  status.permissions = readPermissions()
+  status.missingAssets = missingAssets(ASSETS_DIR)
+  if (status.missingAssets.length) console.error(`[assets] missing (run npm run fetch-assets): ${status.missingAssets.join(', ')}`)
+  status.hotkey = registerHotkey(config.current.ok ? config.current.config.hotkey : 'CommandOrControl+Shift+K')
+  ipcMain.handle('status:get', () => status)
+  output = createOutputWindow(px)
+  output.on('closed', () => (output = null))
+  // A permission changed in System Settings shows up when you come back to the app.
+  app.on('browser-window-focus', () => {
+    const now = readPermissions()
+    if (now.camera !== status.permissions.camera || now.microphone !== status.permissions.microphone) {
+      status.permissions = now
+      publishStatus()
+    }
+  })
+
+  // Replaced, added or removed media files apply without a restart.
+  watchMedia(REACTIONS_DIR, (paths) => output?.webContents.send('media:changed', { root: 'reactions', paths }))
+  watchMedia(CLIPS_DIR, (paths) => output?.webContents.send('media:changed', { root: 'clips', paths }))
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createOutputWindow(px)
+    // Dock icon: bring the Control window back (closing it only hides it).
+    if (control) {
+      control.show()
+      control.focus()
+    } else if (!output) output = createOutputWindow(px)
   })
 })
+
+app.on('will-quit', () => globalShortcut.unregisterAll())
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

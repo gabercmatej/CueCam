@@ -5,7 +5,15 @@ import { RELEASE_MARGIN_MS, TriggerEngine } from './triggers'
 
 const g = (gesture: GestureName, at: number, x = 100): GestureEvent => ({ type: 'gesture', gesture, hand: 'Right', position: { x, y: 200 }, at })
 const w = (word: string, at: number): WordEvent => ({ type: 'word', word, confidence: 1, partial: true, at })
-const final = (word: string, at: number, confidence = 1, seenInPartial = false): WordEvent => ({ type: 'word', word, confidence, partial: false, seenInPartial, at })
+const final = (word: string, at: number, confidence = 1, seenInPartial = false, pauseAfterMs?: number): WordEvent => ({
+  type: 'word',
+  word,
+  confidence,
+  partial: false,
+  seenInPartial,
+  at,
+  ...(pauseAfterMs === undefined ? {} : { pauseAfterMs })
+})
 const rule = (when: RuleConfig['when'], play: string[], cooldownMs?: number, perHand = false): RuleConfig => ({
   when,
   play,
@@ -284,6 +292,49 @@ describe('TriggerEngine', () => {
       expect(e.handle(w('fire', 100))).toEqual([])
       expect(e.handle(final('fire', 900, 1, true))).toEqual([])
       expect(e.tick(100 + 1500 + RELEASE_MARGIN_MS).map((f) => f.effects[0])).toEqual(['solo'])
+    })
+  })
+
+  describe('pauseAfterMs (a word that must end the phrase)', () => {
+    const bye = { ...rule({ word: 'bye' }, ['curtains'], 0), confirm: 'final' as const, minConfidence: 0.9, pauseAfterMs: 400 }
+
+    it('fires when the word is the last of the utterance', () => {
+      expect(engine([bye]).handle(final('bye', 0, 1, true, Infinity))).toHaveLength(1)
+    })
+
+    it('fires when a long enough pause follows', () => {
+      expect(engine([bye]).handle(final('bye', 0, 1, true, 650))).toHaveLength(1)
+    })
+
+    it('does not fire when speech follows at once ("by tomorrow")', () => {
+      expect(engine([bye]).handle(final('bye', 0, 1, true, 30))).toHaveLength(0)
+    })
+
+    it('never fires from a partial, and needs a known pause', () => {
+      const e = engine([bye])
+      expect(e.handle(w('bye', 0))).toHaveLength(0)
+      expect(e.handle(final('bye', 10))).toHaveLength(0)
+    })
+
+    it('still needs the confidence', () => {
+      expect(engine([bye]).handle(final('bye', 0, 0.7, true, Infinity))).toHaveLength(0)
+    })
+  })
+
+  describe('rules switched off in the Control window', () => {
+    it('a disabled rule never fires; the others do; switching it back on restores it', () => {
+      const e = engine([rule({ gesture: 'ThumbUp' }, ['a'], 0), rule({ gesture: 'ThumbUp' }, ['b'], 0)])
+      e.setDisabled(new Set([0]))
+      expect(e.handle(g('ThumbUp', 0)).map((f) => f.effects)).toEqual([['b']])
+      e.setDisabled(new Set())
+      expect(e.handle(g('ThumbUp', 10))).toHaveLength(2)
+    })
+
+    it('a disabled combo neither fires nor holds the word\'s solo rule back', () => {
+      const e = engine([rule({ word: 'fire', gesture: 'OpenPalm', withinMs: 1500 }, ['combo'], 0), rule({ word: 'fire' }, ['solo'], 0)])
+      e.setDisabled(new Set([0]))
+      expect(e.handle(w('fire', 0)).map((f) => f.effects)).toEqual([['solo']])
+      expect(e.handle(g('OpenPalm', 100))).toEqual([])
     })
   })
 })

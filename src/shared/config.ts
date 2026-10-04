@@ -176,7 +176,12 @@ const Rule = z.object({
    */
   confirm: z.enum(['partial', 'final']).default('partial'),
   /** Word rules with `confirm: "final"`: the lowest per-word confidence (0–1) that still fires. */
-  minConfidence: z.number().min(0).max(1).default(0.9)
+  minConfidence: z.number().min(0).max(1).default(0.9),
+  /**
+   * Word rules with `confirm: "final"`: the word must end the phrase, i.e. be the last word of the
+   * utterance or be followed by at least this much silence. "bye" fires, "by tomorrow" doesn't.
+   */
+  pauseAfterMs: z.number().int().min(0).max(5000).optional()
 })
 
 /** Sending your voice + effect sounds into a call through a virtual device (docs/audio-setup.md). */
@@ -272,6 +277,9 @@ export const ConfigSchema = z
     cfg.rules.forEach((rule, i) => {
       for (const name of rule.play) {
         if (!(name in cfg.effects)) ctx.addIssue({ code: 'custom', path: ['rules', i, 'play'], message: `unknown effect "${name}"` })
+      }
+      if (rule.pauseAfterMs !== undefined && !(rule.when.word && !rule.when.gesture && rule.confirm === 'final')) {
+        ctx.addIssue({ code: 'custom', path: ['rules', i, 'pauseAfterMs'], message: 'pauseAfterMs needs a word rule (no gesture) with "confirm": "final"' })
       }
       const word = rule.when.word?.trim().toLowerCase()
       if (word && !words.has(word)) {

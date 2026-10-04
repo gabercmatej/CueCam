@@ -44,7 +44,9 @@ export const MEDIA_TUNING = {
   /** Anchored media fade in over this long. */
   fadeInMs: 120,
   /** A trigger that arrives while its file is still loading plays when ready, unless it is older than this. */
-  maxLoadWaitMs: 1500
+  maxLoadWaitMs: 1500,
+  /** Disarming fades everything out at most this slowly. */
+  windDownFadeMs: 250
 }
 
 interface AssetBase {
@@ -54,6 +56,8 @@ interface AssetBase {
   height: number
   /** A play that arrived while loading (the latest wins). */
   pending?: () => void
+  /** No effect uses it any more; freed once its last showing ends. */
+  orphan?: boolean
 }
 interface ImageAsset extends AssetBase {
   kind: 'image'
@@ -77,6 +81,8 @@ interface VideoAsset extends AssetBase {
 type Asset = ImageAsset | GifAsset | VideoAsset
 
 interface Shown {
+  /** The effect it belongs to (a removed effect's showings fade out). */
+  name: string
   cfg: MediaConfig
   asset: Asset
   display: Sprite
@@ -85,6 +91,8 @@ interface Shown {
   start: number
   /** Fade-out starts here; removed at endAt + fadeMs. */
   endAt: number
+  /** The config's fade, shortened when disarming. */
+  fadeMs: number
   /** Corner cards: their corner and size; null for anchored / full-frame media. */
   card: CornerCard | null
   /** Scale at full size (before the pop). */
@@ -115,6 +123,11 @@ export class MediaEngine {
   private hands: readonly HandPoint[] = []
   private readonly sampler = document.createElement('canvas')
   private generation = 0
+  /** Bumped per path when its file changes on disk, so the new URL bypasses Chromium's cache. */
+  private readonly versions = new Map<string, number>()
+  private effects: Record<string, EffectConfig> = {}
+  /** Sounds currently referenced (decoded in the audio engine). */
+  private soundPaths = new Set<string>()
 
   constructor(
     private readonly layers: { back: Container; front: Container },
@@ -134,8 +147,12 @@ export class MediaEngine {
     return this.shown.length
   }
 
-  /** Resolves every media/sound effect's files (folders → files) and preloads them. */
+  /**
+   * Resolves every media/sound effect's files (folders → files) and preloads them. Showings of effects
+   * that are gone fade out, and files no effect uses any more are freed. Call again after files change.
+   */
   async setEffects(effects: Record<string, EffectConfig>): Promise<void> {
+    this.effects = effects
     const generation = ++this.generation
     const entries = new Set<string>()
     for (const e of Object.values(effects)) if (e.type === 'media' || e.type === 'sound') e.files.forEach((f) => entries.add(f))
@@ -155,11 +172,106 @@ export class MediaEngine {
       if (missing.length) console.warn(`[media] ${name}: nothing usable at reactions/${missing.join(', reactions/')}${list.length ? '' : ' (placeholder)'}`)
       files.set(name, list)
       for (const path of list) {
-        if (e.type === 'sound') void this.audio.load(path)
+        if (e.type === 'sound') void this.audio.load(path, this.urlFor(path))
         else this.load(path)
       }
     }
     this.files = files
+    this.unloadUnused(effects, performance.now())
+  }
+
+  /** Files changed on disk (paths or folders relative to reactions/): drop them so the next setEffects reloads them. */
+  invalidate(paths: readonly string[]): void {
+    const hit = (path: string): boolean => paths.some((p) => path === p || path.startsWith(`${p}/`))
+    // Every changed path gets a new URL, loaded or not: a file can come back later (effect re-added).
+    const changed = new Set(paths)
+    for (const asset of [...this.assets.values()]) {
+      if (!hit(asset.path)) continue
+      changed.add(asset.path)
+      this.free(asset)
+    }
+    for (const path of this.soundPaths) if (hit(path)) changed.add(path)
+    for (const path of changed) {
+      this.audio.forget(path)
+      this.versions.set(path, (this.versions.get(path) ?? 0) + 1)
+    }
+  }
+
+  /** Disarmed: everything on screen starts fading out now (quickly). */
+  windDown(now: number): void {
+    // A trigger still waiting for its file to load must not play after the disarm.
+    for (const asset of this.assets.values()) asset.pending = undefined
+    for (const s of [...this.shown]) {
+      s.fadeMs = Math.min(s.fadeMs, MEDIA_TUNING.windDownFadeMs)
+      this.windDownOne(s, now)
+    }
+  }
+
+  /** Effects whose files are missing or failed to load → the files, for the Control window. */
+  problems(): Map<string, string[]> {
+    const out = new Map<string, string[]>()
+    for (const [name, e] of Object.entries(this.effects)) {
+      if (e.type !== 'media' && e.type !== 'sound') continue
+      const list = this.files.get(name)
+      if (!list) continue // still resolving
+      if (list.length === 0) out.set(name, e.files.map((f) => `reactions/${f}`))
+      else if (e.type === 'media') {
+        const bad = list.filter((p) => this.assets.get(p)?.state === 'missing')
+        if (bad.length) out.set(name, bad.map((p) => `reactions/${p}`))
+      }
+    }
+    return out
+  }
+
+  /** Dev: a loaded file's state and size (to check hot reload). */
+  assetInfo(path: string): { state: string; width: number; height: number; url: string } | null {
+    const a = this.assets.get(path)
+    return a ? { state: a.state, width: a.width, height: a.height, url: this.urlFor(path) } : null
+  }
+
+  private urlFor(path: string): string {
+    const v = this.versions.get(path)
+    return v ? `${mediaUrl(path)}?v=${v}` : mediaUrl(path)
+  }
+
+  /** Fades out showings of effects that no longer exist, and frees files nothing references any more. */
+  private unloadUnused(effects: Record<string, EffectConfig>, now: number): void {
+    for (const s of [...this.shown]) if (!(s.name in effects)) this.windDownOne(s, now)
+    const used = new Set<string>()
+    const sounds = new Set<string>()
+    for (const [name, list] of this.files) for (const p of list) (effects[name]?.type === 'sound' ? sounds : used).add(p)
+    for (const asset of [...this.assets.values()]) {
+      if (used.has(asset.path)) continue
+      // Still on screen (fading out): freed when that showing ends.
+      if (this.shown.some((s) => s.asset === asset)) asset.orphan = true
+      else this.free(asset)
+    }
+    for (const p of this.soundPaths) if (!sounds.has(p)) this.audio.forget(p)
+    this.soundPaths = sounds
+  }
+
+  private windDownOne(s: Shown, now: number): void {
+    if (s.endAt > now) s.endAt = now
+    if (s.card) this.retire(s, now)
+  }
+
+  /** Releases a file's texture/decoder (anything showing it is removed first) and forgets it. */
+  private free(asset: Asset): void {
+    // Out of the map first: removing its showings runs freeOrphans, which must not free it again.
+    if (this.assets.get(asset.path) === asset) this.assets.delete(asset.path)
+    asset.pending = undefined
+    for (const s of [...this.shown]) if (s.asset === asset) this.remove(s)
+    if (asset.kind === 'image') {
+      if (asset.texture !== Texture.EMPTY) asset.texture.destroy(true)
+    } else if (asset.kind === 'gif') {
+      asset.source?.destroy()
+    } else {
+      asset.video.pause()
+      this.audio.releaseVideo(asset.video)
+      asset.video.removeAttribute('src')
+      asset.video.load()
+      asset.texture.destroy(true)
+    }
   }
 
   /** The resolved files per effect, for the startup report. */
@@ -177,7 +289,7 @@ export class MediaEngine {
     const path = this.pick(name)
     const asset = path ? this.assets.get(path) : undefined
     if (!asset || asset.state === 'missing') {
-      if (cfg.placement === 'corner') this.show(cfg, this.placeholder(name), ctx, now)
+      if (cfg.placement === 'corner') this.show(name, cfg, this.placeholder(name), ctx, now)
       else this.onMissing(cfg, ctx)
       return
     }
@@ -189,7 +301,7 @@ export class MediaEngine {
       }
       return
     }
-    this.show(cfg, asset, ctx, now)
+    this.show(name, cfg, asset, ctx, now)
   }
 
   /** Per frame: animation, corner restacking, hand following, expiry. `hands` is reused by the caller. */
@@ -202,11 +314,11 @@ export class MediaEngine {
       const s = this.shown[i]!
       const t = now - s.start
       const d = s.display
-      if (now >= s.endAt + s.cfg.fadeMs) {
+      if (now >= s.endAt + s.fadeMs) {
         expired = true
         continue
       }
-      const fadeOut = now > s.endAt ? 1 - (now - s.endAt) / Math.max(1, s.cfg.fadeMs) : 1
+      const fadeOut = now > s.endAt ? 1 - (now - s.endAt) / Math.max(1, s.fadeMs) : 1
       if (d instanceof GifSprite) d.update(ticker)
       if (s.card) {
         const k = this.cards.indexOf(s)
@@ -238,7 +350,7 @@ export class MediaEngine {
     return path
   }
 
-  private show(cfg: MediaConfig, asset: Asset, ctx: EffectContext, now: number): void {
+  private show(name: string, cfg: MediaConfig, asset: Asset, ctx: EffectContext, now: number): void {
     let ownTexture: Texture | null = null
     let display: Sprite
     if (asset.kind === 'gif') {
@@ -257,7 +369,7 @@ export class MediaEngine {
     const tw = display.texture.width || 1
     const th = display.texture.height || 1
 
-    const shown: Shown = { cfg, asset, display, ownTexture, start: now, endAt: now, card: null, baseScale: 1, placed: false, follow: null }
+    const shown: Shown = { name, cfg, fadeMs: cfg.fadeMs, asset, display, ownTexture, start: now, endAt: now, card: null, baseScale: 1, placed: false, follow: null }
 
     if (asset.kind === 'video') {
       // One playback per file: a re-trigger restarts it.
@@ -362,7 +474,7 @@ export class MediaEngine {
     let restack = false
     for (let i = 0; i < this.shown.length; i++) {
       const s = this.shown[i]!
-      if (now < s.endAt + s.cfg.fadeMs) {
+      if (now < s.endAt + s.fadeMs) {
         this.shown[kept++] = s
         continue
       }
@@ -370,12 +482,21 @@ export class MediaEngine {
     }
     this.shown.length = kept
     if (restack) this.relayout()
+    this.freeOrphans()
   }
 
   private remove(s: Shown): void {
     const i = this.shown.indexOf(s)
     if (i >= 0) this.shown.splice(i, 1)
     if (this.destroy(s)) this.relayout()
+    this.freeOrphans()
+  }
+
+  /** Frees files no effect uses any more once nothing shows them. */
+  private freeOrphans(): void {
+    for (const asset of this.assets.values()) {
+      if (asset.orphan && !this.shown.some((o) => o.asset === asset)) this.free(asset)
+    }
   }
 
   /** Frees a showing. True if it was in the corner stack. */
@@ -454,13 +575,16 @@ export class MediaEngine {
     if (this.assets.get(path)?.state === 'missing') this.assets.delete(path)
     if (this.assets.has(path)) return
     const kind = mediaKind(path)
-    const url = mediaUrl(path)
+    const url = this.urlFor(path)
     const ready = (asset: Asset): void => {
+      if (this.assets.get(path) !== asset) return
       asset.state = 'ready'
       asset.pending?.()
       asset.pending = undefined
     }
     const missing = (asset: Asset, err: unknown): void => {
+      // Freed meanwhile (file changed, effect removed): emptying a video's src also reports an error.
+      if (this.assets.get(path) !== asset) return
       asset.state = 'missing'
       console.warn(`[media] cannot load reactions/${path}`, err)
       // A trigger that waited for it still shows something (placeholder card or sparks).
@@ -477,6 +601,7 @@ export class MediaEngine {
       img
         .decode()
         .then(() => {
+          if (this.assets.get(path) !== asset) return // freed while loading: build nothing
           asset.texture = new Texture({ source: new ImageSource({ resource: img, autoGenerateMipmaps: true, scaleMode: 'linear' }) })
           asset.width = img.naturalWidth
           asset.height = img.naturalHeight
@@ -489,6 +614,7 @@ export class MediaEngine {
       fetch(url)
         .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((buffer) => {
+          if (this.assets.get(path) !== asset) return // freed while loading: build nothing
           asset.source = GifSource.from(buffer)
           asset.width = asset.source.width
           asset.height = asset.source.height

@@ -21,7 +21,7 @@
     { "when": { "gesture": "Pray" }, "play": "pray", "cooldownMs": 3000 },
     { "when": { "word": "boom" }, "play": ["explosion", "shake"], "cooldownMs": 4000 },
     { "when": { "word": "let's go" }, "play": "lets_go", "cooldownMs": 4000 },
-    { "when": { "word": "bye" }, "play": "curtains", "cooldownMs": 6000 }
+    { "when": { "word": "bye" }, "play": "curtains", "cooldownMs": 6000, "confirm": "final", "minConfidence": 0.8, "pauseAfterMs": 150 }
   ],
   "effects": {
     "thumbs_up": { "type": "media", "files": "thumbs up" },

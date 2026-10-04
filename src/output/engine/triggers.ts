@@ -42,6 +42,7 @@ interface RulePart {
   word?: string
   confirm?: 'partial' | 'final'
   minConfidence?: number
+  pauseAfterMs?: number
 }
 
 /**
@@ -52,12 +53,16 @@ interface RulePart {
 function matches(rulePart: RulePart, e: TriggerEvent): boolean {
   if (e.type === 'gesture') return rulePart.gesture === e.gesture
   if (rulePart.word === undefined || norm(rulePart.word) !== norm(e.word)) return false
-  if (rulePart.confirm === 'final') return !e.partial && e.confidence >= (rulePart.minConfidence ?? 0)
+  if (rulePart.confirm === 'final') {
+    if (e.partial || e.confidence < (rulePart.minConfidence ?? 0)) return false
+    // The word must end the phrase: last of the utterance, or followed by a pause ("bye" but not "by tomorrow").
+    return rulePart.pauseAfterMs === undefined || (e.pauseAfterMs ?? 0) >= rulePart.pauseAfterMs
+  }
   return e.partial || !e.seenInPartial
 }
 
 /** The word half of a rule, with its confirm mode. */
-const wordPart = (rule: RuleConfig): RulePart => ({ word: rule.when.word, confirm: rule.confirm, minConfidence: rule.minConfidence })
+const wordPart = (rule: RuleConfig): RulePart => ({ word: rule.when.word, confirm: rule.confirm, minConfidence: rule.minConfidence, pauseAfterMs: rule.pauseAfterMs })
 
 interface HeldSolo {
   /** The word event that is holding its solo rules back. */
@@ -82,6 +87,8 @@ export class TriggerEngine {
    * second arrival of an occurrence that already completed a combo must not fire a solo rule.
    */
   private comboWords = new Map<string, number>()
+  /** Rules switched off in the Control window (indices into `rules`). */
+  private disabled: ReadonlySet<number> = new Set()
 
   get armed(): boolean {
     return this._armed
@@ -97,6 +104,12 @@ export class TriggerEngine {
     this.defaultCooldownMs = defaultCooldownMs
     this.lastFired.clear()
     this.reset()
+  }
+
+  /** Rules that must not fire (switched off in the Control window). Held solos of a disabled rule are dropped. */
+  setDisabled(disabled: ReadonlySet<number>): void {
+    this.disabled = disabled
+    this.held = this.held.filter((h) => (h.rules = h.rules.filter((i) => !disabled.has(i))).length > 0)
   }
 
   /** The gestures currently held (fired earlier, still present). */
@@ -132,7 +145,7 @@ export class TriggerEngine {
     this.rules.forEach((rule, i) => {
       const { gesture, word, withinMs = 1500 } = rule.when
       if (gesture && word) {
-        if (consumed) return
+        if (consumed || this.disabled.has(i)) return
         const wantPartner = e.type === 'gesture' ? wordPart(rule) : { gesture }
         if (!matches(e.type === 'gesture' ? { gesture } : wordPart(rule), e)) return
         const partner =
@@ -161,7 +174,7 @@ export class TriggerEngine {
       }
     }
     const solos = this.rules.flatMap((rule, i) =>
-      !(rule.when.gesture && rule.when.word) && matches({ ...rule.when, ...wordPart(rule) }, e) && this.ready(i, rule, e.at, hand) ? [i] : []
+      !(rule.when.gesture && rule.when.word) && !this.disabled.has(i) && matches({ ...rule.when, ...wordPart(rule) }, e) && this.ready(i, rule, e.at, hand) ? [i] : []
     )
     const holdMs = e.type === 'word' ? this.comboWindowFor(e) : 0
     if (e.type === 'word' && holdMs > 0 && solos.length > 0) {
@@ -183,7 +196,7 @@ export class TriggerEngine {
     let ms = 0
     this.rules.forEach((rule, i) => {
       const { gesture, word, withinMs = 1500 } = rule.when
-      if (gesture && word && norm(word) === norm(e.word) && this.ready(i, rule, e.at)) ms = Math.max(ms, withinMs)
+      if (gesture && word && !this.disabled.has(i) && norm(word) === norm(e.word) && this.ready(i, rule, e.at)) ms = Math.max(ms, withinMs)
     })
     return ms
   }

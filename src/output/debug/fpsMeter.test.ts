@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { FpsMeter, RollingAverage } from './fpsMeter'
 
 describe('FpsMeter', () => {
+  it('fpsAt drops to 0 when frames stop, fps alone would not', () => {
+    const m = new FpsMeter()
+    for (let i = 0; i <= 30; i++) m.tick(i * (1000 / 30))
+    expect(m.fpsAt(1100)).toBeCloseTo(30, 1)
+    expect(m.fpsAt(2500)).toBe(0)
+    expect(m.fps).toBeCloseTo(30, 1)
+  })
+
   it('reports 0 before two frames', () => {
     const m = new FpsMeter()
     m.tick(0)

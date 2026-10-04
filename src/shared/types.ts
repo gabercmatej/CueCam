@@ -50,6 +50,8 @@ export interface WordEvent {
   partial: boolean
   /** Final results only: a partial already reported this occurrence ("partial" rules skip it). */
   seenInPartial?: boolean
+  /** Final results only: silence after the word until the next token, ms (Infinity = last of the utterance). */
+  pauseAfterMs?: number
   at: number
 }
 
