@@ -23,8 +23,10 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 // Dev: everything in the project folder. Packaged: config, reactions/ and effects/clips/ in
 // ~/Library/Application Support/Skillcam/ (seeded from the bundled defaults on first run), models
 // inside the app. Chromium's own data goes to a hidden subfolder so the user folder holds only your files.
+// Dev's Chromium data gets its own folder: Electron's default (appData/skillcam, from package.json) is
+// the packaged app's user folder on a case-insensitive disk.
 const USER_FOLDER = join(app.getPath('appData'), 'Skillcam')
-if (app.isPackaged) app.setPath('userData', join(USER_FOLDER, '.app-data'))
+app.setPath('userData', app.isPackaged ? join(USER_FOLDER, '.app-data') : join(app.getPath('appData'), 'Skillcam Dev'))
 const PATHS = app.isPackaged
   ? pathsIn(USER_FOLDER, join(import.meta.dirname, '../renderer'))
   : pathsIn(app.getAppPath(), join(app.getAppPath(), 'assets'))
