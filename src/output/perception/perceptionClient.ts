@@ -1,9 +1,10 @@
 import PerceptionWorker from './perception.worker?worker'
 import type { Delegate, FrameTasks, FromWorker, ToWorker, WorkerModels } from './perceptionProtocol'
 import type { Task } from './taskScheduler'
+import { assetUrl } from '../urls'
 
-// Paths are relative to the output page; assets/ is served at the renderer root.
-const asset = (path: string): string => new URL(`../mediapipe/${path}`, document.baseURI).href
+// assets/ is served at the renderer root (the web demo sets its own base, see urls.ts).
+const asset = (path: string): string => assetUrl(`mediapipe/${path}`)
 const WASM_BASE = asset('wasm')
 export const MODELS = {
   hands: asset('gesture_recognizer.task'),

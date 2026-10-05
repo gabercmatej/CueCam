@@ -18,7 +18,8 @@ export interface HealthInput {
   camera: { state: 'opening' | 'ok' | 'error'; problem: string | null; label: string; fps: number; sinceOkMs: number }
   /** started: every worker loaded; failed: why one didn't (or crashed). */
   tracking: { started: boolean; failed: string | null; perSecond: number; errors: number }
-  speech: { state: 'loading' | 'on' | 'failed'; error: string | null }
+  /** off: not started yet (the web demo starts voice on request). */
+  speech: { state: 'off' | 'loading' | 'on' | 'failed'; error: string | null }
   call: { sendToCall: boolean; active: boolean; status: string; micError: string | null }
 }
 
@@ -38,6 +39,7 @@ const missing = (status: AppStatus | null, prefix: string): string[] => (status?
 function micProblem(input: HealthInput, error: string | null): string | null {
   const perm = input.status?.permissions.microphone
   if (perm === 'denied' || perm === 'restricted' || (error && /NotAllowed|Permission|denied/i.test(error))) {
+    if (input.status?.browser) return 'Microphone access is blocked for this page. Allow it with the icon at the left of the address bar, then reload.'
     return 'Microphone access is blocked. Allow it in System Settings → Privacy & Security → Microphone (in dev: Electron), then restart Skillcam.'
   }
   if (error && /NotFound|Requested device not found/i.test(error)) return 'No microphone found. Connect one, then restart Skillcam.'
@@ -79,6 +81,7 @@ function speech(input: HealthInput): Link {
   if (s.state === 'failed') {
     return { level: 'error', summary: 'Off', reason: micProblem(input, s.error) ?? `Speech recognition failed to start: ${s.error ?? 'unknown error'}.` }
   }
+  if (s.state === 'off') return { level: 'off', summary: 'Off', reason: null }
   if (s.state === 'loading') return { level: 'wait', summary: 'Loading…', reason: null }
   return ok('Listening')
 }

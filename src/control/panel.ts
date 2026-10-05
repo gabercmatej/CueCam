@@ -8,7 +8,7 @@
  * stats rate (250 ms) and only touches elements whose text or state changed, debug text is built only
  * while the Debug section is open, and nothing is drawn while the window is hidden.
  */
-import type { HotkeyStatus } from '../shared/api'
+import type { HotkeyStatus, OverlayControl, OverlayName } from '../shared/api'
 import type { HandSide } from '../shared/types'
 import type { FaceState } from '../output/perception/faceSmoother'
 import type { FingerStates, Landmark } from '../output/perception/handGeometry'
@@ -120,6 +120,43 @@ function attr(node: Element, name: string, value: string): void {
   if (node.getAttribute(name) !== value) node.setAttribute(name, value)
 }
 
+const OVERLAYS: { name: OverlayName; label: string; key: string; note: string }[] = [
+  { name: 'hands', label: 'Hand skeleton', key: 'H', note: '21 landmarks per hand + the gesture it sees' },
+  { name: 'mask', label: 'Segmentation mask', key: 'M', note: 'what counts as you (effects can go behind it)' },
+  { name: 'face', label: 'Face box', key: 'F', note: 'dashed while your face is covered' },
+  { name: 'stats', label: 'Stats', key: 'S', note: 'fps, gesture latency, quality level' }
+]
+
+/** The web demo's overlay switches (with their keyboard shortcuts), kept in sync with the control. */
+function overlayToggles(doc: Document, overlays: OverlayControl): HTMLElement {
+  const list = doc.createElement('div')
+  list.className = 'overlays'
+  const boxes = OVERLAYS.map((o) => {
+    const row = doc.createElement('label')
+    const box = doc.createElement('input')
+    box.type = 'checkbox'
+    box.className = 'switch'
+    box.setAttribute('role', 'switch')
+    box.addEventListener('change', () => overlays.set(o.name, box.checked))
+    const text = doc.createElement('span')
+    const name = doc.createElement('b')
+    name.textContent = o.label
+    const note = doc.createElement('small')
+    note.textContent = o.note
+    text.append(name, note)
+    const key = doc.createElement('kbd')
+    key.textContent = o.key
+    key.title = `Shortcut: ${o.key}`
+    row.append(box, text, key)
+    list.append(row)
+    return box
+  })
+  const sync = (): void => OVERLAYS.forEach((o, i) => (boxes[i]!.checked = overlays.state[o.name]))
+  sync()
+  overlays.onChange(sync)
+  return list
+}
+
 export class ControlPanel {
   /** Overlay label text per side, rebuilt once per tracking result rather than per drawn frame. */
   private readonly labels = new Map<HandSide, LabelText>()
@@ -155,12 +192,21 @@ export class ControlPanel {
   /** The latest segmentation mask as a tinted image, rebuilt per mask only while the toggle is on. */
   private readonly maskCanvas: HTMLCanvasElement
   private maskImage: ImageData | null = null
+  /** Mounted inside the web demo's page: no preview (the stage is next to it), no call audio, Finder or global hotkey. */
+  private readonly inPage: boolean
 
-  private constructor(private readonly win: Window) {
+  private constructor(
+    private readonly win: Window,
+    root: HTMLElement | null = null,
+    overlays?: OverlayControl
+  ) {
     const doc = (this.doc = win.document)
-    doc.head.replaceChildren()
-    doc.body.replaceChildren()
-    doc.title = 'Skillcam Control'
+    this.inPage = root !== null
+    if (!root) {
+      doc.head.replaceChildren()
+      doc.body.replaceChildren()
+      doc.title = 'Skillcam Control'
+    }
     const style = doc.createElement('style')
     style.textContent = STYLE
     doc.head.append(style)
@@ -201,6 +247,7 @@ export class ControlPanel {
     const strip = el('ul', 'health')
     strip.setAttribute('aria-label', 'Health')
     for (const link of LINKS) {
+      if (this.inPage && link === 'call') continue
       const li = el('li')
       const sum = el('span', 'sum', '…')
       li.append(el('span', 'dot'), el('span', 'name', LINK_NAMES[link]), sum)
@@ -298,6 +345,13 @@ export class ControlPanel {
     this.maskCanvas = el('canvas')
 
     const main = el('main')
+    if (this.inPage) {
+      strip.classList.add('three')
+      const sees = overlays ? [section('What the AI sees', overlayToggles(doc, overlays))] : []
+      main.append(top, strip, this.issueList, ...sees, section('Live', facts), section('Effects', table), this.debug)
+      root!.append(main)
+      return
+    }
     main.append(
       top,
       strip,
@@ -308,6 +362,11 @@ export class ControlPanel {
       this.debug
     )
     doc.body.append(main)
+  }
+
+  /** The panel inside a page of its own document (the web demo), not a second window. */
+  static mount(root: HTMLElement, overlays?: OverlayControl): ControlPanel {
+    return new ControlPanel(window, root, overlays)
   }
 
   /** Opens (or, after a reload of the Output, reuses) the Control window. Null if it was blocked. */
@@ -432,13 +491,14 @@ export class ControlPanel {
     if (s.hotkey) {
       text(this.hotkeyKey, hotkeyLabel(s.hotkey.accelerator))
       this.hotkeyBox.classList.toggle('bad', !s.hotkey.registered)
-      text(this.hotkeyNote, s.hotkey.registered ? 'from any app' : 'not available')
+      text(this.hotkeyNote, !s.hotkey.registered ? 'not available' : this.inPage ? 'in this tab' : 'from any app')
     }
 
     const issues: Issue[] = []
     for (const link of LINKS) {
       const l: Link = s.health[link]
-      const els = this.linkEls.get(link)!
+      const els = this.linkEls.get(link)
+      if (!els) continue
       attr(els.li, 'data-level', l.level satisfies Level)
       text(els.sum, l.summary)
       if (l.reason && (l.level === 'error' || l.level === 'warn')) issues.push({ level: l.level, title: `${LINK_NAMES[link]}: ${l.summary}`, detail: l.reason })
@@ -547,6 +607,7 @@ export class ControlPanel {
    * renders, in the same task, so the WebGL drawing buffer is still valid. Skip while hidden.
    */
   drawPreview(output: HTMLCanvasElement, hands: OverlayHand[], face: FaceState | null): void {
+    if (this.inPage) return
     const g = this.ctx
     const debug = this.debug.open
     g.setTransform(-1, 0, 0, 1, PREVIEW.width, 0)

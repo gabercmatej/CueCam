@@ -1,0 +1,57 @@
+# Builds the web demo (npm run build:web → dist-web/) and deploys it to GitHub Pages on every push to main.
+# One-time setup: repo Settings → Pages → Build and deployment → Source: "GitHub Actions".
+name: Web demo → GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push replaces a queued one, a running deploy finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # The web build never runs Electron: skip its ~100 MB binary download.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Models (~60 MB) change only when fetch-assets.sh does; MediaPipe's wasm is re-copied from node_modules anyway.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            assets/mediapipe/*.task
+            assets/mediapipe/*.tflite
+            assets/vosk
+          key: models-${{ hashFiles('scripts/fetch-assets.sh') }}
+      - run: npm run fetch-assets
+      - run: npm test
+      - run: npm run build:web
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist-web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

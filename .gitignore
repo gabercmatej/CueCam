@@ -2,6 +2,7 @@
 node_modules/
 out/
 dist/
+dist-web/
 release/
 build/icon.iconset/
 
@@ -18,3 +19,4 @@ assets/vosk/
 .superpowers/
 .vscode/
 *.pem
+.playwright-mcp/

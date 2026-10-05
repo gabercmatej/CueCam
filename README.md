@@ -6,7 +6,7 @@
 
 Make a gesture or say a word, and confetti, fireballs, explosions *behind* you and reaction clips appear on your video in about 150 ms. Fully offline, 60 fps at 1080p, into FaceTime, Zoom, Meet, WhatsApp or Discord.
 
-[![Live demo](https://img.shields.io/badge/Live_demo-coming_soon-lightgrey?style=for-the-badge)](#live-demo)
+[![Live demo](https://img.shields.io/badge/▶_Live_demo-try_it_in_your_browser-E5484D?style=for-the-badge)](https://gabercmatej.github.io/skillcam-real-time-gesture-recognition/)
 
 ![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-000000?logo=apple&logoColor=white)
 ![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
@@ -14,7 +14,7 @@ Make a gesture or say a word, and confetti, fireballs, explosions *behind* you a
 ![MediaPipe](https://img.shields.io/badge/MediaPipe-Tasks_Vision-0097A7?logo=google&logoColor=white)
 ![PixiJS](https://img.shields.io/badge/PixiJS-v8_WebGL-E91E63)
 ![Vosk](https://img.shields.io/badge/Vosk-offline_speech-5C2D91)
-![Tests](https://img.shields.io/badge/tests-279_passing-2EA44F)
+![Tests](https://img.shields.io/badge/tests-289_passing-2EA44F)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
@@ -24,7 +24,12 @@ Make a gesture or say a word, and confetti, fireballs, explosions *behind* you a
 
 ## Live demo
 
-> 🔗 **[Placeholder]** A browser version (Chrome/Edge, nothing to install) is on its way. The link goes here.
+**[gabercmatej.github.io/skillcam-real-time-gesture-recognition](https://gabercmatej.github.io/skillcam-real-time-gesture-recognition/)** · Chrome or Edge on a laptop or desktop, nothing to install.
+
+The same engine as the desktop app, running entirely in your browser tab: camera, hand tracking, segmentation, all visual effects and reactions, light painting, and (one click) voice triggers and clap. Toggle **"What the AI sees"** to watch the hand skeletons with their live gesture labels, the segmentation mask, the face box and the stats (keys H, M, F, S); K arms and disarms. Nothing is uploaded: models and media download once, then everything runs locally. How it's built: [docs/web-demo.md](docs/web-demo.md).
+
+<!-- SCREENSHOT: the web demo with "What the AI sees" overlays on (docs/media/web-demo.png) -->
+> 📸 **[Placeholder]** Web demo screenshot with the overlays on.
 
 ## Contents
 
@@ -336,6 +341,7 @@ Other sections (`audio`, `video`, `speech`, `clap`, `performance`) have working 
 | Audio | Web Audio, AudioWorklets (clap onset DSP, mic capture), `setSinkId` routing |
 | Config | [zod](https://zod.dev) schema validation, hot reload |
 | Tests | [Vitest](https://vitest.dev) |
+| Web demo | Vite, GitHub Actions → GitHub Pages |
 | Packaging | [electron-builder](https://www.electron.build) (arm64 `.app` + `.dmg`) |
 | Into calls | [OBS Studio](https://obsproject.com) Virtual Camera, [BlackHole](https://existential.audio/blackhole/) |
 
@@ -353,7 +359,8 @@ src/
 │   ├── render/      PixiJS stage, camera layer, chroma key and grade shaders
 │   ├── audio/       audio engine, clap onset worklet, clock mapping
 │   └── perf/        adaptive quality controller, gesture latency probe
-└── control/         the Control panel (vanilla DOM, built once, updated every 250 ms)
+├── control/         the Control panel (vanilla DOM, built once, updated every 250 ms)
+└── web/             the browser demo: web adapter for window.skillcam, page shell, staged loading
 scripts/             asset fetch, icon, perf probe (CDP), speech test recordings
 docs/                OBS and audio setup, design plans per phase
 ```
@@ -363,7 +370,7 @@ Design and decisions, phase by phase: [BUILD_PLAN.md](BUILD_PLAN.md) and [PROGRE
 ## Testing
 
 ```sh
-npm test            # 279 unit tests (Vitest), < 1 s
+npm test            # 289 unit tests (Vitest), < 1 s
 npm run typecheck   # strict TypeScript, main + renderer
 ```
 

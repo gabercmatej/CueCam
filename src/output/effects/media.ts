@@ -10,7 +10,8 @@
 import { type Container, type Filter, Graphics, ImageSource, Rectangle, type Renderer, Sprite, Text, Texture, type Ticker, VideoSource } from 'pixi.js'
 import { GifSource, GifSprite } from 'pixi.js/gif'
 import type { EffectConfig } from '../../shared/config'
-import { mediaKind, mediaUrl } from '../../shared/media'
+import { mediaKind } from '../../shared/media'
+import { reactionUrl } from '../urls'
 import type { EffectContext, HandSide, Point } from '../../shared/types'
 import type { AudioEngine } from '../audio/audioEngine'
 import { createChromaKey, type ChromaKeySettings } from '../render/chromaKey'
@@ -231,7 +232,7 @@ export class MediaEngine {
 
   private urlFor(path: string): string {
     const v = this.versions.get(path)
-    return v ? `${mediaUrl(path)}?v=${v}` : mediaUrl(path)
+    return v ? `${reactionUrl(path)}?v=${v}` : reactionUrl(path)
   }
 
   /** Fades out showings of effects that no longer exist, and frees files nothing references any more. */

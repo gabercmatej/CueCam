@@ -1,3 +1,5 @@
+import { inBrowser } from './urls'
+
 /** What we ask the camera for: its native 1080p at 30 fps, uncropped and unscaled by Chromium. */
 export const CAMERA_REQUEST = { width: 1920, height: 1080, fps: 30 }
 
@@ -30,6 +32,7 @@ export function describeCameraError(err: unknown): string {
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
+      if (inBrowser()) return 'Camera access is blocked for this page. Allow it with the icon at the left of the address bar: Skillcam picks the camera up by itself.'
       return 'Camera access is blocked. Allow it in System Settings → Privacy & Security → Camera (in dev: Electron), then restart Skillcam.'
     case 'NotFoundError':
     case 'OverconstrainedError':

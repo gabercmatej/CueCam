@@ -5,11 +5,12 @@ import { waitForModelLoad } from './modelLoad'
 import { SpeechGate } from './speechGate'
 import { AudioClock, buildGrammar, type VoskResult } from './speechParse'
 import { type SpottedWord, WordSpotter } from './wordSpotter'
+import { assetUrl } from '../urls'
 
 // vosk-browser runs recognition in its own Web Worker (created from an inline blob),
 // so decoding stays off the render thread without a worker of ours.
 // The worker fetches the model itself, so the URL must be absolute.
-const MODEL_URL = new URL('../vosk/vosk-model-small-en-us-0.15.tar.gz', document.baseURI).href
+export const MODEL_URL = assetUrl('vosk/vosk-model-small-en-us-0.15.tar.gz')
 const SAMPLE_RATE = 16000
 
 export interface SpeechEvents {

@@ -19,7 +19,7 @@ import type { Onset } from './clapOnset'
 import type { ClapOnsetSettings } from './clapOnset'
 import clapWorkletUrl from './clapOnset.worklet.ts?worker&url'
 import type { ClapWorkletIn, ClapWorkletOut } from './clapOnset.worklet'
-import { mediaUrl } from '../../shared/media'
+import { reactionUrl } from '../urls'
 import { ClockOffset } from './clockOffset'
 
 export interface CallSettings {
@@ -68,6 +68,8 @@ export class AudioEngine {
   private routeAgain = false
   private micTrack: MediaStreamTrack | null = null
   private clapNode: AudioWorkletNode | null = null
+  /** The raw mic start in progress or done (true = mic and clap detector running), so it never runs twice at once. */
+  private micStart: Promise<boolean> | null = null
   /** Audio clock → performance.now, so a sound is stamped when it happened, not when its message arrived. */
   private readonly clock = new ClockOffset()
   private monitor: { ctx: SinkContext; gain: GainNode; tap: MediaStreamAudioDestinationNode } | null = null
@@ -96,7 +98,11 @@ export class AudioEngine {
     floorDb: -120
   }
 
-  constructor(private readonly micEvents: MicEvents) {
+  /** `micOnDemand`: the raw mic (call mix + clap detector) waits for startMic() instead of starting now. */
+  constructor(
+    private readonly micEvents: MicEvents,
+    micOnDemand = false
+  ) {
     this.master.connect(this.mix)
     this.micGain.connect(this.mix)
     this.mix.connect(this.ctx.destination)
@@ -114,7 +120,7 @@ export class AudioEngine {
     }
     navigator.mediaDevices.addEventListener('devicechange', deviceLost)
     this.ctx.addEventListener('error', deviceLost)
-    void this.startMic()
+    if (!micOnDemand) void this.startMic()
   }
 
   /** The effect context's state and sample rate (dev diagnostics). */
@@ -192,15 +198,33 @@ export class AudioEngine {
     }
   }
 
-  private async startMic(): Promise<void> {
+  /**
+   * Opens the raw mic for the call mix, then the clap detector on it (at construction, unless
+   * `micOnDemand`). Never throws: resolves true when both run. A mic that opened stays open if only
+   * the detector fails (call audio still works); calling again retries what failed, never twice at once.
+   */
+  startMic(): Promise<boolean> {
+    this.micStart ??= this.openMic().then((ok) => {
+      if (!ok) this.micStart = null
+      return ok
+    })
+    return this.micStart
+  }
+
+  private micSource: MediaStreamAudioSourceNode | null = null
+
+  private async openMic(): Promise<boolean> {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: false,
-        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-      })
-      this.micTrack = stream.getAudioTracks()[0] ?? null
-      const source = this.ctx.createMediaStreamSource(stream)
-      source.connect(this.micGain)
+      if (!this.micSource) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        })
+        this.micTrack = stream.getAudioTracks()[0] ?? null
+        this.micSource = this.ctx.createMediaStreamSource(stream)
+        this.micSource.connect(this.micGain)
+      }
+      const source = this.micSource
       await this.ctx.audioWorklet.addModule(clapWorkletUrl)
       const node = new AudioWorkletNode(this.ctx, 'clap-onset', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' })
       node.port.onmessage = (e: MessageEvent<ClapWorkletOut>) => {
@@ -225,9 +249,11 @@ export class AudioEngine {
       const s = this.micTrack?.getSettings()
       this.status.mic = `${this.micTrack?.label ?? 'mic'} · raw (no AEC/NS/AGC)${s?.sampleRate ? ` · ${s.sampleRate / 1000} kHz` : ''}`
       this.route()
+      return true
     } catch (err) {
       this.status.mic = `FAILED: ${String(err)}`
       console.error('[audio] raw mic failed to start (no call audio, no clap sound)', err)
+      return false
     }
   }
 
@@ -310,7 +336,7 @@ export class AudioEngine {
   }
 
   /** Fetches and decodes a sound from reactions/ (once per path, until `forget`). `url` may carry a version. */
-  load(path: string, url = mediaUrl(path)): Promise<AudioBuffer | null> {
+  load(path: string, url = reactionUrl(path)): Promise<AudioBuffer | null> {
     let buffer = this.buffers.get(path)
     if (!buffer) {
       buffer = fetch(url)

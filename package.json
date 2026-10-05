@@ -9,6 +9,8 @@
     "fetch-assets": "bash scripts/fetch-assets.sh",
     "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
     "build": "electron-vite build",
+    "build:web": "node scripts/build-web.mjs",
+    "preview:web": "vite preview --config vite.web.config.ts --port 4173",
     "preview": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",

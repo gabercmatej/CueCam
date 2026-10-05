@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Same policy as the app, minus its skillcam:// scheme: everything comes from this site. 'unsafe-eval' + blob:
+         are required by vosk-browser (its inline worker's Emscripten embind uses new Function). -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob: mediastream:; style-src 'self' 'unsafe-inline'"
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276%27 fill=%27%23e5484d%27/%3E%3C/svg%3E" />
+    <meta name="description" content="Skillcam live demo: hand gestures and spoken words trigger real-time effects on your webcam, entirely in your browser." />
+    <title>Skillcam · live demo</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span>Skillcam <span class="sub">live demo</span></div>
+      <a class="gh" href="https://github.com/gabercmatej/skillcam-real-time-gesture-recognition" target="_blank" rel="noopener">Source on GitHub ↗</a>
+    </header>
+
+    <div class="app">
+      <section class="left">
+        <div class="stage" id="stage">
+          <div class="overlay" id="overlay">
+            <div class="card" id="start-card">
+              <h1>Your webcam, reacting to your hands and voice.</h1>
+              <p>Give a thumbs up, make a fist, pinch to draw in the air, or say “boom”. Hand tracking, segmentation and speech recognition all run on your machine, in this tab.</p>
+              <button class="primary" id="start" type="button">Start camera</button>
+              <p class="fine" id="start-note">Chrome or Edge on a laptop or desktop. First load ≈ 30 MB (models and effects, cached afterwards); voice adds 41 MB, only if you turn it on.</p>
+            </div>
+            <div class="card" id="load-card" hidden>
+              <h2>Starting Skillcam</h2>
+              <ol class="steps">
+                <li id="step-camera"><span class="tick"></span><span class="what">Camera</span><span class="state">Waiting for permission…</span></li>
+                <li id="step-models">
+                  <span class="tick"></span><span class="what">Hand tracking models</span><span class="state" id="models-state">—</span>
+                  <div class="bar-track"><div class="bar-fill" id="models-bar"></div></div>
+                </li>
+                <li id="step-tracker"><span class="tick"></span><span class="what">Tracker</span><span class="state">Waiting…</span></li>
+              </ol>
+              <p class="fine" id="slow-note" hidden></p>
+            </div>
+            <div class="card error" id="error-card" hidden>
+              <h2 id="error-title"></h2>
+              <p id="error-text"></p>
+              <button class="primary" id="retry" type="button" hidden>Try again</button>
+            </div>
+          </div>
+          <div class="hud" id="hud" hidden><span id="hud-fps">—</span><span id="hud-latency"></span><span id="hud-quality"></span></div>
+        </div>
+
+        <div class="under">
+          <div class="voice" id="voice">
+            <div class="voice-text">
+              <b>Voice &amp; clap</b>
+              <span id="voice-state">Say “boom”, “let’s go”, “I love you” or “bye”, and clap. Needs the microphone and a 41 MB speech model.</span>
+              <div class="bar-track" id="voice-track" hidden><div class="bar-fill" id="voice-bar"></div></div>
+            </div>
+            <button class="secondary" id="voice-btn" type="button" disabled>Enable voice &amp; clap</button>
+          </div>
+          <p class="privacy"><b>Private by design.</b> Everything runs locally in your browser. Your camera and microphone never leave this tab: nothing is uploaded, recorded or stored. The page only downloads the models and effects.</p>
+          <details class="try">
+            <summary>What to try</summary>
+            <ul>
+              <li>👍 👎 ✌️ ☝️ 👉 one hand: a reaction in the corner</li>
+              <li>✊ fist: confetti from that hand (both hands work)</li>
+              <li>🤏 pinch and move: draw light in the air</li>
+              <li>🤘 rock: guitar riff · 🙏 pray · 🙌 both hands up · 🫶 finger heart with two hands</li>
+              <li>✋ open palm + say “fire”: a fireball on your palm</li>
+              <li>“boom”: an explosion behind you · “bye” at the end of a sentence: curtains</li>
+            </ul>
+            <p class="fine">Headphones help once voice is on: effect sounds from speakers can reach the mic.</p>
+          </details>
+        </div>
+      </section>
+
+      <aside class="right" id="panel" aria-label="Controls">
+        <div class="panel-placeholder" id="panel-placeholder">
+          <p>Controls appear here once the camera is running: arm and disarm (<kbd>K</kbd>), what was recognized, and a Test button for every effect.</p>
+        </div>
+      </aside>
+    </div>
+
+    <script type="module" src="./shell.ts"></script>
+  </body>
+</html>

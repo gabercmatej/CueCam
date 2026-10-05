@@ -29,6 +29,7 @@ import type { FrameTasks, HandsResult, TrackedHandResult, WorkerModels } from '.
 import { type Task, TaskScheduler } from './perception/taskScheduler'
 import { decoysFor } from './perception/decoys'
 import { SpeechInput } from './perception/speech'
+import { AiOverlays } from './render/aiOverlays'
 import { createStage } from './render/stage'
 import { correctHandedness, OUTPUT_VIEW, toScreen } from './view'
 
@@ -62,10 +63,14 @@ function palmOf(landmarks: Landmark[]): Point {
   return toScreen(view, { x: x / PALM.length, y: y / PALM.length })
 }
 
-/** Normalized raw camera box → output pixels (mirrored if the view is). */
-function boxToScreen(b: FaceBox): ScreenBox {
+/** Normalized raw camera box → output pixels (mirrored if the view is), into `out` (a new object by default). */
+function boxToScreen(b: FaceBox, out: ScreenBox = { x: 0, y: 0, width: 0, height: 0 }): ScreenBox {
   const x = view.mirror ? 1 - (b.x + b.width) : b.x
-  return { x: x * view.width, y: b.y * view.height, width: b.width * view.width, height: b.height * view.height }
+  out.x = x * view.width
+  out.y = b.y * view.height
+  out.width = b.width * view.width
+  out.height = b.height * view.height
+  return out
 }
 
 /** Rules switched off in the Control window, by signature (labels.ruleKey), kept in this page's storage. */
@@ -124,7 +129,11 @@ async function main(): Promise<void> {
   const startup = first.ok ? first.config : null
   const outputHeight = startup?.video.outputHeight ?? 1080
   // The Control window opens first, so a missing or blocked camera is explained there, not only in the terminal.
-  let control = ControlPanel.open()
+  // The web demo mounts it in its page instead (and the stage too).
+  const mount = window.skillcam.mount
+  let control = mount ? ControlPanel.mount(mount.panel, window.skillcam.overlays) : ControlPanel.open()
+  /** Web demo: the mic (speech + clap sound) starts only when the page asks. */
+  const voiceOnDemand = window.skillcam.setVoiceStarter !== undefined
   let appStatus: AppStatus | null = null
   void window.skillcam.getStatus().then((st) => (appStatus = st))
   window.skillcam.onStatus((st) => (appStatus = st))
@@ -154,7 +163,7 @@ async function main(): Promise<void> {
       status: appStatus,
       camera: { state: cam.state, problem: cam.problem, label: cam.label, fps: 0, sinceOkMs: 0 },
       tracking: { started: false, failed: null, perSecond: 0, errors: 0 },
-      speech: { state: 'loading', error: null },
+      speech: { state: voiceOnDemand ? 'off' : 'loading', error: null },
       call: { sendToCall: false, active: false, status: 'off', micError: null }
     })
     const c = latestConfig
@@ -167,7 +176,7 @@ async function main(): Promise<void> {
   const waitingPanel = setInterval(publishWaiting, 250)
   const video = await cam.open()
   clearInterval(waitingPanel)
-  const pixi = await createStage(video, view, { width: (outputHeight * 16) / 9, height: outputHeight })
+  const pixi = await createStage(video, view, { width: (outputHeight * 16) / 9, height: outputHeight }, mount?.stage)
 
   // Effects
   const particles = new ParticleEngine(pixi.front, pixi.app.renderer, view.width, view.height, view.mirror)
@@ -190,13 +199,17 @@ async function main(): Promise<void> {
       const clap = clapFusion.sound(at, performance.now())
       if (clap) onFusedClap(clap)
     }
-  })
+  }, voiceOnDemand)
   const media = new MediaEngine({ back: pixi.back, front: pixi.front }, pixi.app.renderer, view.width, view.height, view.mirror, audio, (cfg, ctx) => {
     // All files missing for an anchored/full-frame effect: a spark burst so the trigger still reads.
     particles.play({ type: 'particles', preset: 'sparks', anchor: cfg.anchor, count: 220 }, ctx)
   })
   const lightPaint = new LightPaint(pixi.front, pixi.app.renderer, view.width, view.height, pixi.app.renderer.resolution)
   const registry = new EffectRegistry({ particles, clips, camera, media, lightPaint })
+  // Web demo: "What the AI sees" over the effects. The desktop Output never has them.
+  const overlayControl = window.skillcam.overlays
+  const ai = overlayControl ? new AiOverlays(view, pixi.camera.maskTint) : null
+  if (ai) pixi.scene.addChild(ai.root)
   const triggers = new TriggerEngine()
   const latency = new GestureLatency()
   /** Rule signatures switched off in the Control window (kept across config reloads and restarts). */
@@ -336,9 +349,9 @@ async function main(): Promise<void> {
   }).observe({ type: 'longtask' })
   let configStatus = 'loading…'
   let configError: string | null = null
-  let speechState: 'loading' | 'on' | 'failed' = 'loading'
+  let speechState: 'off' | 'loading' | 'on' | 'failed' = voiceOnDemand ? 'off' : 'loading'
   let speechError: string | null = null
-  let speechStatus = 'loading model…'
+  let speechStatus = voiceOnDemand ? 'off (starts on request)' : 'loading model…'
   let trackerFailed: string | null = null
   let trackersStarted = false
   let lastTrigger: PanelState['last'] = null
@@ -367,6 +380,7 @@ async function main(): Promise<void> {
       if (firing.hand) ctx.hand = firing.hand
       if (face) ctx.face = boxToScreen(face.box)
       for (const name of firing.effects) registry.play(name, ctx, now)
+      if (ai && firing.hand && config?.rules[firing.rule]?.when.gesture) ai.pulse(firing.hand, now)
       log(`${what} → ${firing.effects.join(' + ')}`)
       const rule = config?.rules[firing.rule]
       lastTrigger = { effects: firing.effects.join(' + '), cause: rule && firing.rule >= 0 && cause !== 'Test button' ? `${ruleTrigger(rule)} · ${cause}` : cause, at: now }
@@ -498,6 +512,8 @@ async function main(): Promise<void> {
     stage.gestures.push(performance.now() - t0)
   }
   const delegate = startup?.performance.trackerDelegate ?? 'GPU'
+  // Web demo: the model files are still downloading (with progress); the worker then reads them from the cache.
+  await window.skillcam.modelsReady?.catch(() => {})
   await Promise.all(
     pipes.map(async (pipe) => {
       const models: WorkerModels = {}
@@ -542,50 +558,70 @@ async function main(): Promise<void> {
     (err) => console.error('[perception] frame step failed', err)
   )
 
-  // Speech → word events
-  SpeechInput.start({
-    onLevel(peak) {
-      micPeak = Math.max(peak, micPeak * 0.8)
-    },
-    onText(text) {
-      heardText = text
-    },
-    onWord(word, at) {
-      const gap = word.gapAfterMs === null ? '' : `, pause ${Number.isFinite(word.gapAfterMs) ? `${Math.round(word.gapAfterMs)} ms` : 'end'}`
-      const stage = word.partial ? 'partial' : `final ${word.confidence.toFixed(2)}, ${Math.round(word.latencyMs ?? 0)} ms${word.seenInPartial ? ', seen' : ''}${gap}`
-      lastWord = `${word.word} (${stage})`
-      console.log(`[speech] ${lastWord}`)
-      const fired = dispatch({
-        type: 'word',
-        word: word.word,
-        confidence: word.confidence,
-        partial: word.partial,
-        seenInPartial: word.seenInPartial,
-        ...(word.gapAfterMs === null ? {} : { pauseAfterMs: word.gapAfterMs }),
-        at
-      })
-      if (import.meta.env.DEV) wordLog.push(`${lastWord}${fired ? ' → FIRED' : ''}`)
-      // The panel lists each spoken occurrence once: partials, plus finals no partial reported.
-      if (word.partial || !word.seenInPartial) heard.push({ word: word.word, fired: fired > 0 })
-      else if (fired) {
-        const prev = heard.findLast((h) => h.word === word.word)
-        if (prev) prev.fired = true
+  // Speech → word events. Rejects (after reporting it in the panel) if the mic or the model fails.
+  const startVoice = (): Promise<void> => {
+    speechState = 'loading'
+    speechStatus = 'loading model…'
+    speechError = null
+    return SpeechInput.start({
+      onLevel(peak) {
+        micPeak = Math.max(peak, micPeak * 0.8)
+      },
+      onText(text) {
+        heardText = text
+      },
+      onWord(word, at) {
+        const gap = word.gapAfterMs === null ? '' : `, pause ${Number.isFinite(word.gapAfterMs) ? `${Math.round(word.gapAfterMs)} ms` : 'end'}`
+        const stage = word.partial ? 'partial' : `final ${word.confidence.toFixed(2)}, ${Math.round(word.latencyMs ?? 0)} ms${word.seenInPartial ? ', seen' : ''}${gap}`
+        lastWord = `${word.word} (${stage})`
+        console.log(`[speech] ${lastWord}`)
+        const fired = dispatch({
+          type: 'word',
+          word: word.word,
+          confidence: word.confidence,
+          partial: word.partial,
+          seenInPartial: word.seenInPartial,
+          ...(word.gapAfterMs === null ? {} : { pauseAfterMs: word.gapAfterMs }),
+          at
+        })
+        if (import.meta.env.DEV) wordLog.push(`${lastWord}${fired ? ' → FIRED' : ''}`)
+        // The panel lists each spoken occurrence once: partials, plus finals no partial reported.
+        if (word.partial || !word.seenInPartial) heard.push({ word: word.word, fired: fired > 0 })
+        else if (fired) {
+          const prev = heard.findLast((h) => h.word === word.word)
+          if (prev) prev.fired = true
+        }
+        if (heard.length > 6) heard.shift()
       }
-      if (heard.length > 6) heard.shift()
-    }
-  })
-    .then((s) => {
-      speech = s
-      if (config) s.setWords(config.words, config.speech.decoys ? decoysFor(config.words) : [])
-      speechStatus = 'on'
-      speechState = 'on'
     })
-    .catch((err: unknown) => {
-      speechStatus = 'FAILED'
-      speechState = 'failed'
-      speechError = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
-      console.error('[speech] failed to start', err)
+      .then((s) => {
+        speech = s
+        if (config) s.setWords(config.words, config.speech.decoys ? decoysFor(config.words) : [])
+        speechStatus = 'on'
+        speechState = 'on'
+      })
+      .catch((err: unknown) => {
+        speechStatus = 'FAILED'
+        speechState = 'failed'
+        speechError = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+        console.error('[speech] failed to start', err)
+        throw err
+      })
+  }
+  if (voiceOnDemand) {
+    // Speech and the raw mic each start once; whichever failed is retried by the next request.
+    let speechStart: Promise<void> | null = null
+    window.skillcam.setVoiceStarter?.(async () => {
+      speechStart ??= startVoice().catch((err: unknown) => {
+        speechStart = null
+        throw err
+      })
+      const [clap] = await Promise.all([audio.startMic(), speechStart])
+      return { clap }
     })
+  } else {
+    startVoice().catch(() => {})
+  }
 
   if (import.meta.env.DEV) {
     // Dev-only hooks for scripts/perf-probe.mjs (CDP): trigger effects and measure GPU render cost without a camera subject.
@@ -735,6 +771,14 @@ async function main(): Promise<void> {
   }
   let forceCutout: boolean | null = null
 
+  /** Reused per frame for the face overlay's box. */
+  const overlayFace: ScreenBox = { x: 0, y: 0, width: 0, height: 0 }
+  /** The live gesture name for a hand's overlay label ("" when none). */
+  const overlayLabel = (side: HandSide): string => {
+    for (const h of labels) if (h.side === side) return h.pinching ? 'Pinch' : h.label ? gestureName(h.label) : ''
+    return ''
+  }
+
   // Render loop. Order per frame: update (priority 0) → Pixi render (LOW) → after-render (UTILITY).
   const ticker = pixi.app.ticker
   let frameStart = 0
@@ -774,6 +818,11 @@ async function main(): Promise<void> {
     lightPaint.update(now, pinchOf)
     camera.update(now)
     if (fakeMask) maskAt = now
+    if (ai && overlayControl) {
+      const on = overlayControl.state
+      const face = on.face ? faces.get(now) : null
+      ai.update(now, on, predicted, overlayLabel, face ? boxToScreen(face.box, overlayFace) : null, face?.visible ?? false, now - maskAt < maskStaleMs(segmentStride, cameraFps.fps))
+    }
     // The person cutout costs a full-screen pass: draw it only while back FX exist and the mask is fresh.
     pixi.camera.person.visible =
       forceCutout ?? (segmentation && pixi.back.children.length > 0 && now - maskAt < maskStaleMs(segmentStride, cameraFps.fps))
@@ -914,6 +963,7 @@ async function main(): Promise<void> {
   }
   function publishStats(): void {
     const now = performance.now()
+    window.skillcam.stats?.({ renderFps: renderFps.fps, cameraFps: cameraFps.fps, trackFps: trackFps.fps, quality: quality.level, gestureLatencyMs: latency.count ? latency.avg.total.value : 0, mainWorkMs: stage.work.value })
     if (control?.visible) {
       mixDb = audio.mixDb()
       control.update(panelState(now), now)
@@ -994,4 +1044,8 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => console.error(`[output] fatal ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`))
+main().catch((err: unknown) => {
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+  console.error(`[output] fatal ${message}`)
+  window.skillcam.fatal?.(message)
+})

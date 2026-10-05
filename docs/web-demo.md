@@ -1,84 +1,56 @@
-# Web demo: readiness assessment
+# Web demo
 
-Assessment only (Phase 5); nothing here is built. Goal: a browser demo on Vercel or Netlify. Camera in Chrome, gestures + voice triggers + effects including the reactions media. No OBS, BlackHole or hotkey.
+A Chrome/Edge version of Skillcam on GitHub Pages: camera, hand tracking, gestures, every visual effect, the reactions media, light painting, segmentation, and (on request) voice triggers and clap. Live: https://gabercmatej.github.io/skillcam-real-time-gesture-recognition/
 
-## Verdict
+It is the same Output page the Electron app runs (`src/output/main.ts`), not a fork. A web adapter stands in for Electron.
 
-Most of the app is already browser code. The Output page (camera, perception worker, speech worker, trigger engine, effects, PixiJS stage, Web Audio) runs in Chromium today and uses only web APIs. Electron reaches into it through two narrow seams: `window.skillcam` (8 calls) and the `skillcam://` URL scheme (2 places). Replace those with a web adapter, move the Control window into the page, and add a loading screen. **Estimate: 3–4 focused days** (≈ 5–7 evenings).
+## How it fits together
 
-## What runs as-is
-
-| Part | Notes |
+| Electron | Web demo (`src/web/`) |
 |---|---|
-| Camera (`getUserMedia`, 1080p30) | Same API. Needs HTTPS (every host provides it) and a click before the permission prompt. |
-| Perception worker (MediaPipe hands, segmentation, face; GPU delegate) | Module worker + transferred `VideoFrame` + WebGL in the worker. Chrome/Edge yes. Safari and Firefox are untested and likely to break (VideoFrame transfer, WebGL in workers). Target Chromium only. |
-| Speech (vosk-browser worker) | Same. It caches the extracted model in IndexedDB, so the 39 MB download happens once per browser. |
-| Clap detector, mic capture (AudioWorklets) | Same. |
-| Trigger engine, gestures, config schema (zod) | Pure TypeScript. |
-| Effects, PixiJS stage, shaders, chroma key | Same. |
-| Media playback (images, GIFs, video, sound) | Same once URLs point at static files (see below). |
-| Effect audio output | `AudioContext.setSinkId` exists in Chrome. Call routing simply stays off (`audio.call.enabled: false`), and effects play on the speakers. |
-| CSP | Same policy, as a header. `'unsafe-eval'` + `blob:` are still needed by vosk-browser. |
+| Preload (`window.skillcam`, IPC to main) | `platform.ts` installs the same `SkillcamApi` from static files |
+| Config read + watched by main | `fetch('skillcam.config.json')`, validated with the same zod schema; call audio forced off, output 720p |
+| `media:resolve` lists `reactions/` folders | `media-manifest.json` written at build time; `resolveFromList` applies the same rules |
+| `skillcam://media/…`, `skillcam://clips/…` | Plain same-origin URLs (`urls.ts` reads the base from the adapter) |
+| Control window (`window.open`) | `ControlPanel.mount()`: the same panel in the page, without preview, call audio, Finder and global hotkey |
+| Global hotkey ⇧⌘K | `K` in the tab |
+| Mic, speech and clap detector start at launch | Start on "Enable voice & clap" (`setVoiceStarter`; `AudioEngine` with `micOnDemand`) |
+| Unmirrored Output (for OBS) | Mirrored (`OUTPUT_VIEW.mirror = true`, everything flips together) |
+| — | "What the AI sees" overlays (below), web only |
 
-## Electron-only parts and their browser replacement
+The optional members of `SkillcamApi` (`urls`, `modelsReady`, `setVoiceStarter`, `stats`, `overlays`, `mount`) are unset in Electron, so the desktop app behaves exactly as before.
 
-| Electron part | Where | Browser replacement | Effort |
-|---|---|---|---|
-| `window.skillcam.getConfig / onConfig` | `src/output/main.ts` | `fetch('skillcam.config.json')`. No hot reload (or a "reload" button). | S |
-| `resolveMedia` (main lists folders on disk) | `src/output/effects/media.ts` | A `media-manifest.json` generated at build time (folder → files), with the same `resolveMedia` result shape. | S |
-| `skillcam://media/…`, `skillcam://clips/…` URLs | `media.ts`, `clip.ts` | A base URL from the adapter: `/reactions/…`, `/clips/…` (same origin, so no CORS needed). | S |
-| `getStatus / onStatus` (permissions, missing models, hotkey) | `main.ts`, `control/health.ts` | A static status: permissions from `navigator.permissions.query`, no hotkey. | S |
-| `onToggleArmed` (global hotkey) | `main.ts` | Drop it, or use a key in the page (Space). | XS |
-| `onMediaChanged` (file watching) | `main.ts` | No-op. | XS |
-| `showFolder` | panel | Hidden on the web. | XS |
-| Control window (`window.open('about:blank')` at startup) | `control/panel.ts` | **Popup blockers stop a `window.open` without a click, and two windows are odd in a demo.** Mount the same panel DOM in a side drawer of the page instead. The panel builds its DOM into whatever document it's given, so this is mostly layout. The mirrored preview is redundant there (the canvas is right next to it). | M |
-| Main-process: window sizing for OBS, `disable-backgrounding` switches, App Nap blocker, network filter, permission handler | `src/main/index.ts` | Not needed. A hidden tab throttles rendering, which is fine for a demo. The network filter becomes the CSP's `connect-src 'self'`. | — |
+## Loading in stages
 
-A clean way to do it: a `Platform` interface with the same shape as `SkillcamApi`, with an `electron` implementation (the preload, as now) and a `web` one. Plus a second Vite entry (`web/index.html`) that sets up the web platform, shows a start button and mounts the panel in-page. The desktop app stays exactly as it is.
+1. **Start camera** asks for the camera at once, while the tracking models download with a byte-accurate progress bar (`loader.ts`, sizes from `asset-sizes.json`): MediaPipe wasm 11.8 MB + gesture model 8.4 MB + segmenter and face detector 0.5 MB. The worker then gets them from the HTTP cache.
+2. The camera picture shows as soon as it is allowed. Tracking starts when the models are in.
+3. The reactions media (9 MB) load after the models (`resolveMedia` waits for them), so they don't compete with tracking.
+4. Voice only on click: mic permission first, then the 41 MB Vosk model with progress, then the speech worker, the raw mic and the clap detector. Until then Speech shows "Off". Clap needs the sound as well as the camera, so it's off too.
 
-## Hosting requirements
+Messages: unsupported browser (non-Chromium, mobile, no WebGL 2 / VideoFrame), camera blocked / missing / busy (with Try again), mic blocked, model download failed, and a "still loading" note after 15 s.
 
-- **No COOP/COEP needed.** Neither MediaPipe's `vision_wasm_module_internal` build nor vosk-browser uses WASM threads/`SharedArrayBuffer`. The Electron app has never been cross-origin isolated, and everything runs. So no special headers, and no cross-origin isolation problems with media.
-- **HTTPS**: required for camera and mic. Vercel and Netlify both provide it.
-- **MIME types**: `.wasm` must be served as `application/wasm` (both hosts do). Serve `.tar.gz` as-is, without on-the-fly re-compression or `Content-Encoding: gzip`, or vosk-browser receives an already-decompressed tar.
-- **Caching**: long `Cache-Control: immutable` for models, wasm and hashed JS. Version model filenames when they change.
-- **Per-file and bandwidth limits**: the largest file is the Vosk model (39 MB). Check the host's current static-file size limit and monthly bandwidth on the free plan. At ~70 MB per first visit, a few thousand first visits a month already add up to hundreds of GB.
+## "What the AI sees" overlays
 
-## Download size on first visit
+Toggles in the panel, remembered in localStorage, with shortcuts: **H** hand skeleton (on by default), **M** segmentation mask, **F** face box, **S** stats. Drawn in Pixi on top of the effects, inside the scene (they shake with the picture), from the landmarks predicted for the frame on screen.
 
-| File | Size | Needed for |
-|---|---|---|
-| Vosk small English model (`.tar.gz`) | 39 MB | voice triggers |
-| MediaPipe wasm (`vision_wasm_module_internal`, one variant only) | 11.3 MB | all tracking |
-| Gesture recognizer model | 8.0 MB | hands |
-| Selfie segmenter + face detector | 0.5 MB | behind-you effects, face anchor |
-| App JS (gzipped) | 2.6 MB (6.9 MB raw, mostly vosk-browser's inlined wasm) | everything |
-| `reactions/` media | 8.9 MB | effects (can load lazily) |
-| **Total** | **≈ 70 MB** | |
+- Skeleton: per hand a fixed set of sprites (a soft glow line and a thin core per bone, a dot per landmark), only transforms change per frame, one batched draw. Cyan for your left hand, amber for your right. The live gesture name floats under the wrist; a firing gesture pulses its skeleton for 420 ms.
+- Mask: one extra quad sampling the existing mask texture with the person layer's blur and feathered edge, tinted violet.
+- Face box: rounded, dashed while the face is held but not seen. Redrawn only when it moves.
+- Stats: render fps, gesture → effect latency, quality level, in the stage's corner.
 
-Only one of MediaPipe's three wasm variants is loaded (`_module_internal`). The other two (21 MB) must be left out of the web build.
+## Build and deploy
 
-**Load time:** ≈ 6 s at 100 Mbit/s, ≈ 12 s at 50, ≈ 1 min at 10. Repeat visits come from the cache. To make the first visit feel fast:
-1. Start camera + hand tracking first (≈ 20 MB). Gestures work after a few seconds.
-2. Load the Vosk model in the background, with a "voice triggers loading…" chip (they are optional in the demo).
-3. Load reactions lazily, on first trigger, or after tracking is up.
-4. Show a progress bar per stage. vosk-browser's download can't report progress, so fetch the file ourselves and hand it a blob URL.
+- `npm run build:web` (`scripts/build-web.mjs`): Vite with `vite.web.config.ts` (root `src/web`, `base: './'`), then copies only the wasm variant the worker loads (`vision_wasm_module_internal`, not the other two), the three models, the Vosk model, `reactions/` (file names lose `#`, `?` and `%`; static servers disagree on `%23`), `effects/clips/` and the config, and writes the two manifests. It fails if a file is over 100 MB or the site over 1 GB.
+- `npm run preview:web` serves `dist-web/` on port 4173.
+- `.github/workflows/pages.yml`: on push to `main`: `npm ci` (no Electron binary), cached models, `fetch-assets`, tests, `build:web`, deploy to Pages.
 
-## Effort estimate
+**GitHub Pages checks:** site 78.5 MB (limit 1 GB), largest file 41.2 MB (limit 100 MB), soft bandwidth 100 GB/month (≈1,300 full first visits with voice, ≈3,000 without). Pages serves `.tar.gz` as `application/gzip` with no `Content-Encoding` (checked on vosk-browser's own Pages demo), so Vosk gets the archive as-is. `.wasm` is served as `application/wasm`. No COOP/COEP needed (no wasm threads).
 
-| Task | Days |
-|---|---|
-| Platform adapter + web implementation (config, media manifest, URLs, status) | 0.5 |
-| Second Vite entry + build script (manifest generation, asset subset, headers file) | 0.5 |
-| In-page control drawer (reuse `ControlPanel`), start button/permission flow | 1 |
-| Loading screen with staged loading and progress | 0.5 |
-| Chrome/Edge testing (perf, a laptop without a GPU), mobile "not supported" message | 0.5–1 |
-| Deploy (Vercel or Netlify), caching headers, README link | 0.25 |
-| **Total** | **≈ 3–4 days** |
+## Polish not done yet
 
-## Risks
-
-- **Rights to the reactions media**: on a public website the third-party memes and stock clips are more exposed than in a repo. Use your own or clearly licensed clips for the demo.
-- **Speaker → mic echo**: without headphones, effect sounds and the demo's own audio can reach the mic and trigger words. Default to muted effect sounds or a "use headphones" hint.
-- **Weaker machines**: the adaptive quality controller already handles this, but a laptop without a dedicated GPU in a browser tab is untested.
-- **Browsers other than Chromium**: show a message instead of a broken page.
+- Split vosk-browser (6.2 MB raw, 2.5 MB gzipped, mostly its inlined wasm) out of the main chunk so it loads only with voice.
+- Placeholders for media while they load; a "loading effects" chip.
+- Own or licensed reaction media for the public site (the current ones are third-party placeholders).
+- Mobile layout and a phone-friendly lite mode; Safari/Firefox once they support VideoFrame transfer and worker WebGL.
+- Echo: default effect sounds lower, or a headphones prompt when voice turns on.
+- An impeccable design pass on the page (onboarding, empty states, motion).

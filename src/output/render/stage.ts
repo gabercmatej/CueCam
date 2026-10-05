@@ -28,7 +28,7 @@ export interface Stage {
  * renders at `pixels.height / view.height` resolution, so the canvas backing store has exactly
  * the output's real pixels (1920×1080): camera pixels map 1:1 and OBS captures them unscaled.
  */
-export async function createStage(video: HTMLVideoElement, view: View, pixels: { width: number; height: number }): Promise<Stage> {
+export async function createStage(video: HTMLVideoElement, view: View, pixels: { width: number; height: number }, parent?: HTMLElement): Promise<Stage> {
   const app = new Application()
   await app.init({
     width: view.width,
@@ -44,9 +44,10 @@ export async function createStage(video: HTMLVideoElement, view: View, pixels: {
   })
   // The backing store is the real pixel size; CSS stretches it over the window, which is sized
   // in points to hold exactly those pixels (main/index.ts), so nothing is resampled.
-  app.canvas.style.width = '100vw'
-  app.canvas.style.height = '100vh'
-  document.body.appendChild(app.canvas)
+  // The web demo mounts it into its page instead, scaled to the box it is given.
+  app.canvas.style.width = parent ? '100%' : '100vw'
+  app.canvas.style.height = parent ? '100%' : '100vh'
+  ;(parent ?? document.body).appendChild(app.canvas)
   console.log(`[output] canvas ${app.canvas.width}×${app.canvas.height} px · window ${innerWidth}×${innerHeight} pt × devicePixelRatio ${devicePixelRatio}`)
 
   // updateFPS 0: Pixi uploads each new camera frame (it uses requestVideoFrameCallback).

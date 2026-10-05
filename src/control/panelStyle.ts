@@ -60,6 +60,7 @@ export const STYLE = `
   .health { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--sunk); }
   .health li { padding: 9px 12px; display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: center; min-width: 0; }
   .health li + li { border-left: 1px solid var(--line); }
+  .health.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .health .dot { grid-row: span 2; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   .health .name { font-weight: 600; }
   .health .sum { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -90,6 +91,14 @@ export const STYLE = `
   .words { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
   .words span { padding: 1px 7px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; }
   .words span.fired { border-color: var(--ink); }
+
+  /* What the AI sees (web demo) */
+  .overlays { display: grid; gap: 2px; }
+  .overlays label { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 6px 2px; cursor: pointer; }
+  .overlays span { display: grid; min-width: 0; }
+  .overlays b { font-weight: 600; }
+  .overlays small { color: var(--faint); font-size: 12px; }
+  .overlays kbd { font-size: 12px; padding: 3px 7px; color: var(--muted); }
 
   /* Effects */
   .rules { width: 100%; border-collapse: collapse; }

@@ -4,6 +4,7 @@ import type { EffectContext } from '../../shared/types'
 import { createChromaKey } from '../render/chromaKey'
 import { clipAlignment, resolveAnchors } from './anchors'
 import { keySettings } from './clipKey'
+import { clipUrl } from '../urls'
 
 type ClipConfig = Extract<EffectConfig, { type: 'clip' }>
 
@@ -79,7 +80,7 @@ export class ClipEngine {
         console.warn(`[clip] cannot load effects/clips/${file} (${video.error?.message ?? 'not found'})`)
       })
       const v = this.versions.get(file)
-      video.src = `skillcam://clips/${encodeURIComponent(file)}${v ? `?v=${v}` : ''}`
+      video.src = `${clipUrl(file)}${v ? `?v=${v}` : ''}`
       this.clips.set(file, clip)
     }
   }

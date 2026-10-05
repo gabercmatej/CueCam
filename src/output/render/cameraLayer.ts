@@ -57,12 +57,33 @@ void main() {
 }
 `
 
+/** The mask itself as a soft tinted overlay (web demo's "What the AI sees"), same blur and edge as the person layer. */
+const MASK_TINT_FRAGMENT = /* glsl */ `
+in vec2 vUV;
+out vec4 finalColor;
+uniform sampler2D uMask;
+uniform vec4 uMaskEdge;
+uniform vec4 uTintColor;
+void main() {
+  vec2 d = uMaskEdge.zw;
+  float m = 4.0 * texture(uMask, vUV).r
+    + 2.0 * (texture(uMask, vUV + vec2(d.x, 0.0)).r + texture(uMask, vUV - vec2(d.x, 0.0)).r
+           + texture(uMask, vUV + vec2(0.0, d.y)).r + texture(uMask, vUV - vec2(0.0, d.y)).r)
+    + texture(uMask, vUV + d).r + texture(uMask, vUV - d).r
+    + texture(uMask, vUV + vec2(d.x, -d.y)).r + texture(uMask, vUV + vec2(-d.x, d.y)).r;
+  float a = smoothstep(uMaskEdge.x * 0.6, uMaskEdge.y, m / 16.0) * uTintColor.a;
+  finalColor = vec4(uTintColor.rgb * a, a);
+}
+`
+
 /** Feathering: blurred confidence below LOW is background, above HIGH is person. */
 const MASK_EDGE = { low: 0.35, high: 0.75, spreadTexels: 1.25 }
 
 export interface CameraLayers {
   background: Mesh<MeshGeometry, Shader>
   person: Mesh<MeshGeometry, Shader>
+  /** The mask as a tinted overlay; not on the stage unless someone adds it (web overlays). Hidden by default. */
+  maskTint: Mesh<MeshGeometry, Shader>
   setGrade(grade: Grade): void
   /** Uploads a new mask (bytes, raw camera orientation). */
   setMask(data: Uint8Array, width: number, height: number): void
@@ -118,10 +139,20 @@ export function createCameraLayers(camera: TextureSource, width: number, height:
   const personShader = make(true, edge)
   const person = new Mesh({ geometry, shader: personShader })
   person.visible = false
+  const tintShader = Shader.from({
+    gl: { vertex: VERTEX, fragment: MASK_TINT_FRAGMENT, name: 'mask-tint' },
+    resources: {
+      uMask: mask,
+      tint: new UniformGroup({ uMaskEdge: { value: edge, type: 'vec4<f32>' }, uTintColor: { value: new Float32Array([0.62, 0.36, 1, 0.42]), type: 'vec4<f32>' } })
+    }
+  })
+  const maskTint = new Mesh({ geometry, shader: tintShader })
+  maskTint.visible = false
 
   return {
     background,
     person,
+    maskTint,
     setGrade(g) {
       const u = grade.uniforms as { uSaturation: number; uTintAmount: number; uTint: Float32Array }
       if (u.uSaturation === g.saturation && u.uTintAmount === g.tintAmount && u.uTint[0] === g.tint[0] && u.uTint[1] === g.tint[1] && u.uTint[2] === g.tint[2]) return
@@ -138,10 +169,12 @@ export function createCameraLayers(camera: TextureSource, width: number, height:
         const old = mask
         mask = maskSource(w, h, data)
         personShader.resources.uMask = mask
+        tintShader.resources.uMask = mask
         old.destroy()
         edge[2] = MASK_EDGE.spreadTexels / w
         edge[3] = MASK_EDGE.spreadTexels / h
         ;(personShader.resources.layer as UniformGroup).update()
+        ;(tintShader.resources.tint as UniformGroup).update()
       } else {
         mask.resource = data
         mask.update()
