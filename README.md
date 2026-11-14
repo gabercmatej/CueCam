@@ -19,6 +19,23 @@ Make a gesture or say a word, and confetti, fireballs, explosions *behind* you a
 
 </div>
 
+<p align="center">
+  <img src="docs/media/control-panel.png" alt="CueCam control panel: live preview with hand landmarks, camera, tracking, speech and call-audio health, last trigger and per-gesture effect switches" width="100%">
+</p>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/light-painting.png" alt="Light painting: a pinch draws a glowing rainbow line while the other hand is recognised as an open palm"></td>
+<td width="50%"><img src="docs/media/thumbs-up-reaction.png" alt="A thumbs-up gesture is recognised and triggers a reaction clip in the corner of the video"></td>
+</tr>
+<tr>
+<td align="center"><sub><b>Light painting</b> · pinch to draw, both hands tracked at once</sub></td>
+<td align="center"><sub><b>Reactions</b> · a recognised gesture fires a clip</sub></td>
+</tr>
+</table>
+
+<p align="center"><sub>Control panel and gesture overlays, shown with a stylised demo avatar.</sub></p>
+
 ## Live demo
 
 **[gabercmatej.github.io/cuecam](https://gabercmatej.github.io/cuecam/)** · Chrome or Edge on a laptop or desktop, nothing to install.
