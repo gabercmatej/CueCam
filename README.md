@@ -6,7 +6,7 @@
 
 Make a gesture or say a word, and confetti, fireballs, explosions *behind* you and reaction clips appear on your video in about 150 ms. Fully offline, 60 fps at 1080p, into FaceTime, Zoom, Meet, WhatsApp or Discord.
 
-[![Live demo](https://img.shields.io/badge/▶_Live_demo-try_it_in_your_browser-E5484D?style=for-the-badge)](https://gabercmatej.github.io/cuecam/)
+[![Live demo](https://img.shields.io/badge/▶_Live_demo-try_it_in_your_browser-E5484D?style=for-the-badge)](https://gabercmatej.github.io/CueCam/)
 
 ![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-000000?logo=apple&logoColor=white)
 ![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
@@ -38,7 +38,7 @@ Make a gesture or say a word, and confetti, fireballs, explosions *behind* you a
 
 ## Live demo
 
-**[gabercmatej.github.io/cuecam](https://gabercmatej.github.io/cuecam/)** · Chrome or Edge on a laptop or desktop, nothing to install.
+**[gabercmatej.github.io/CueCam](https://gabercmatej.github.io/CueCam/)** · Chrome or Edge on a laptop or desktop, nothing to install.
 
 The same engine as the desktop app, running entirely in your browser tab: camera, hand tracking, segmentation, all visual effects and reactions, light painting, and (one click) voice triggers and clap. Toggle **"What the AI sees"** to watch the hand skeletons with their live gesture labels, the segmentation mask, the face box and the stats (keys H, M, F, S); K arms and disarms. Nothing is uploaded: models and media download once, then everything runs locally. How it's built: [docs/web-demo.md](docs/web-demo.md).
 
@@ -247,8 +247,8 @@ Requirements: a Mac with Apple Silicon (developed on macOS 26), Node 20.19+ or 2
 ### Build and run
 
 ```sh
-git clone https://github.com/gabercmatej/cuecam.git
-cd cuecam
+git clone https://github.com/gabercmatej/CueCam.git
+cd CueCam
 npm install
 npm run fetch-assets   # MediaPipe + Vosk models (~80 MB, once)
 npm run dev            # run from source

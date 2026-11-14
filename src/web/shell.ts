@@ -140,7 +140,7 @@ async function start(): Promise<void> {
     panel: $('panel'),
     modelsReady,
     onStats,
-    onFatal: (message) => showError('Skillcam couldn’t start', `${message}. Hardware acceleration may be off in the browser settings; turn it on and reload.`)
+    onFatal: (message) => showError('CueCam couldn’t start', `${message}. Hardware acceleration may be off in the browser settings; turn it on and reload.`)
   })
   watchStartup(modelsReady)
   // On the web Skillcam is a mirror: you see yourself the way you move (effects flip with it).
@@ -184,7 +184,7 @@ function watchStartup(modelsReady: Promise<void>): void {
     if (now - errorSince > 3000 || now - modelsAt > STUCK_MS) {
       clearInterval(timer)
       const text = issue?.textContent?.trim() || 'No hand tracking results arrived. The graphics driver may be busy or blocked: close other heavy tabs, check that hardware acceleration is on, and reload.'
-      showError('Skillcam couldn’t start tracking', text, () => location.reload())
+      showError('CueCam couldn’t start tracking', text, () => location.reload())
       $<HTMLButtonElement>('retry').textContent = 'Reload'
     }
   }, 1000)
