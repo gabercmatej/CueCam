@@ -1,12 +1,12 @@
 <div align="center">
 
-# Skillcam
+# CueCam
 
 **Real-time gesture and voice recognition that turns your webcam into a live effects engine for video calls.**
 
 Make a gesture or say a word, and confetti, fireballs, explosions *behind* you and reaction clips appear on your video in about 150 ms. Fully offline, 60 fps at 1080p, into FaceTime, Zoom, Meet, WhatsApp or Discord.
 
-[![Live demo](https://img.shields.io/badge/▶_Live_demo-try_it_in_your_browser-E5484D?style=for-the-badge)](https://gabercmatej.github.io/skillcam-real-time-gesture-recognition/)
+[![Live demo](https://img.shields.io/badge/▶_Live_demo-try_it_in_your_browser-E5484D?style=for-the-badge)](https://gabercmatej.github.io/cuecam/)
 
 ![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-000000?logo=apple&logoColor=white)
 ![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
@@ -19,17 +19,11 @@ Make a gesture or say a word, and confetti, fireballs, explosions *behind* you a
 
 </div>
 
-<!-- SCREENSHOT/GIF: hero demo, e.g. "boom" → explosion behind you in a FaceTime call (docs/media/hero.gif) -->
-> 📸 **[Placeholder]** Hero GIF: "boom" → an explosion behind you in a call.
-
 ## Live demo
 
-**[gabercmatej.github.io/skillcam-real-time-gesture-recognition](https://gabercmatej.github.io/skillcam-real-time-gesture-recognition/)** · Chrome or Edge on a laptop or desktop, nothing to install.
+**[gabercmatej.github.io/cuecam](https://gabercmatej.github.io/cuecam/)** · Chrome or Edge on a laptop or desktop, nothing to install.
 
 The same engine as the desktop app, running entirely in your browser tab: camera, hand tracking, segmentation, all visual effects and reactions, light painting, and (one click) voice triggers and clap. Toggle **"What the AI sees"** to watch the hand skeletons with their live gesture labels, the segmentation mask, the face box and the stats (keys H, M, F, S); K arms and disarms. Nothing is uploaded: models and media download once, then everything runs locally. How it's built: [docs/web-demo.md](docs/web-demo.md).
-
-<!-- SCREENSHOT: the web demo with "What the AI sees" overlays on (docs/media/web-demo.png) -->
-> 📸 **[Placeholder]** Web demo screenshot with the overlays on.
 
 ## Contents
 
@@ -45,7 +39,7 @@ The same engine as the desktop app, running entirely in your browser tab: camera
 
 ## What it does
 
-Skillcam watches your webcam and listens to your mic, recognizes hand gestures and a small set of spoken trigger words, and composites effects onto your video in real time. A frameless Output window carries only the finished picture; OBS turns it into a virtual camera for any call app. Your voice and the effect sounds go into the call through a virtual audio device.
+CueCam watches your webcam and listens to your mic, recognizes hand gestures and a small set of spoken trigger words, and composites effects onto your video in real time. A frameless Output window carries only the finished picture; OBS turns it into a virtual camera for any call app. Your voice and the effect sounds go into the call through a virtual audio device.
 
 | | |
 |---|---|
@@ -60,9 +54,6 @@ Skillcam watches your webcam and listens to your mic, recognizes hand gestures a
 | 🎚️ **Arm / disarm** | A global hotkey (⇧⌘K) works from inside the call app. Disarming fades every running effect out within 250 ms. The other side never sees the state. |
 | ♻️ **Hot reload** | Edit the JSON config or drop files into `reactions/`: changes apply on the next trigger, with no restart. An invalid config keeps the last good one and shows the error. |
 | 🩺 **Control panel** | Armed state, a health strip (camera, tracking, speech, call audio) with reasons in plain words, live preview, last trigger and its cause, a Test button and an on/off switch per rule, per-stage timings. |
-
-<!-- SCREENSHOT: the Control panel (docs/media/control.png) -->
-> 📸 **[Placeholder]** Control panel screenshot.
 
 ## Gestures and words
 
@@ -89,8 +80,6 @@ The default mapping (`skillcam.config.json`):
 | "bye" (at the end of a sentence) | Curtains close over everything |
 
 <!-- GIF: a montage of a few effects (docs/media/effects.gif) -->
-> 📸 **[Placeholder]** Effects montage GIF.
-
 ## Architecture
 
 ### Video pipeline
@@ -230,17 +219,19 @@ MacBook Air (Apple M5), 1080p camera and output, call audio on:
 | Control panel update | 0.20–0.24 ms every 250 ms |
 | Long tasks on the main thread | **0** |
 
-OBS, the virtual camera and the call app add their own latency after Skillcam.
+OBS, the virtual camera and the call app add their own latency after CueCam.
 
 ## Setup
+
+> The packaged app, config files and data folder still use the project's original working name, **Skillcam**.
 
 Requirements: a Mac with Apple Silicon (developed on macOS 26), Node 20.19+ or 22.12+. For calls: [OBS Studio](https://obsproject.com) and [BlackHole 2ch](https://existential.audio/blackhole/).
 
 ### Build and run
 
 ```sh
-git clone https://github.com/gabercmatej/skillcam-real-time-gesture-recognition.git
-cd skillcam-real-time-gesture-recognition
+git clone https://github.com/gabercmatej/cuecam.git
+cd cuecam
 npm install
 npm run fetch-assets   # MediaPipe + Vosk models (~80 MB, once)
 npm run dev            # run from source
@@ -365,7 +356,6 @@ scripts/             asset fetch, icon, perf probe (CDP), speech test recordings
 docs/                OBS and audio setup, design plans per phase
 ```
 
-Design and decisions, phase by phase: [BUILD_PLAN.md](BUILD_PLAN.md) and [PROGRESS.md](PROGRESS.md) (every number in this README comes from there).
 
 ## Testing
 

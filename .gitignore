@@ -15,7 +15,6 @@ assets/vosk/
 *.log
 .env
 .env.*
-.claude/
 .superpowers/
 .vscode/
 *.pem
